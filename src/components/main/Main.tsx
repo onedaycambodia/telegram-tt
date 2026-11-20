@@ -89,6 +89,7 @@ import FoldersSidebar from './FoldersSidebar';
 import ForwardRecipientPicker from './ForwardRecipientPicker.async';
 import GameModal from './GameModal';
 import HistoryCalendar from './HistoryCalendar.async';
+import MediaTransferModal from './MediaTransferModal';
 import NewContactModal from './NewContactModal.async';
 import PremiumLimitReachedModal from './premium/common/PremiumLimitReachedModal.async';
 import GiveawayModal from './premium/GiveawayModal.async';
@@ -655,6 +656,7 @@ const Main = ({
       <ForwardRecipientPicker isOpen={isForwardModalOpen} />
       <DraftRecipientPicker requestedDraft={requestedDraft} />
       <Dialogs />
+      <MediaTransferModal />
       <AudioPlayer noUi />
       <FloatingRoundVideo />
       <ModalContainer />
