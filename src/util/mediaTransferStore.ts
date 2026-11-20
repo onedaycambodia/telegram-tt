@@ -21,6 +21,8 @@ export type MediaTransferJob = {
 export type MediaTransferState = {
   isOpen: boolean;
   chatId?: string;
+  /** set when opened from "select messages" - only these are transferred */
+  messageIds?: number[];
   job?: MediaTransferJob;
 };
 
@@ -43,8 +45,8 @@ export function subscribeMediaTransfer(listener: () => void) {
   return () => { listeners.delete(listener); };
 }
 
-export function openMediaTransfer(chatId: string) {
-  setState({ isOpen: true, chatId });
+export function openMediaTransfer(chatId: string, messageIds?: number[]) {
+  setState({ isOpen: true, chatId, messageIds });
 }
 
 export function closeMediaTransfer() {
@@ -117,9 +119,12 @@ export async function startMediaTransfer(params: {
   albums: boolean;
   /** "Send everything again (ignore history)" */
   fresh: boolean;
+  /** download + upload every file (works for protected and unprotected chats) */
+  download?: boolean;
+  messageIds?: number[];
 }) {
   const {
-    fromChat, toChat, fromTitle, toTitle, types, hideCaption, albums, fresh,
+    fromChat, toChat, fromTitle, toTitle, types, hideCaption, albums, fresh, download, messageIds,
   } = params;
   const id = `${Date.now()}`;
   const status: MediaTransferStatus = {
@@ -137,7 +142,9 @@ export async function startMediaTransfer(params: {
     types,
     hideCaption,
     albums,
-    skipIds: fresh ? [] : readLedger(fromChat.id, toChat.id),
+    download,
+    messageIds,
+    skipIds: fresh || messageIds?.length ? [] : readLedger(fromChat.id, toChat.id),
   });
   poll();
 }
