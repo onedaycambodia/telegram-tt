@@ -35,7 +35,7 @@ type Options = {
 
 const OPTS_KEY = 'mt-opts';
 const DEFAULT_OPTS: Options = {
-  video: true, photo: true, text: false, hide: true, albums: true, direct: true,
+  video: true, photo: true, text: false, hide: true, albums: true, direct: false,
 };
 
 const TILES: [keyof Options, string, boolean][] = [
@@ -43,11 +43,11 @@ const TILES: [keyof Options, string, boolean][] = [
   ['photo', 'Photo', false],
   ['text', 'Text Chat', false],
   ['hide', 'Hide Caption', false],
-  ['albums', 'Send as Albums (random 5-6)', true],
-  ['direct', 'Direct download + upload (protected or not)', true],
+  ['albums', 'Send as Albums', false],
+  ['direct', 'Force download + upload (slow - protected chats do it automatically)', true],
 ];
 
-const SELECTED_TILES = ['hide', 'albums', 'direct'];
+const SELECTED_TILES = ['hide', 'albums'];
 
 const ROWS: [MediaTransferKind, string][] = [['video', 'Videos'], ['photo', 'Photo'], ['text', 'Text']];
 
@@ -133,7 +133,7 @@ const MediaTransferModal = ({
       types: isSelection
         ? { video: true, photo: true, text: true }
         : { video: opts.video, photo: opts.photo, text: opts.text },
-      download: opts.direct,
+      download: isSelection ? true : opts.direct,
       messageIds: isSelection ? messageIds : undefined,
       hideCaption: opts.hide,
       albums: opts.albums,
@@ -224,7 +224,7 @@ const MediaTransferModal = ({
         <div className={styles.head}>
           <span className={styles.badge}>➦</span>
           <div>
-            <div className={styles.headTitle}>All Media Transfer</div>
+            <div className={styles.headTitle}>{job.selected ? 'Send selected' : 'All Media Transfer'}</div>
             <div className={styles.headSub}>{job.fromTitle} → {job.toTitle}{job.albums ? ' · Albums' : ''}</div>
           </div>
         </div>
@@ -272,7 +272,7 @@ const MediaTransferModal = ({
       isOpen={isOpen}
       onClose={closeMediaTransfer}
       className={styles.root}
-      title="All Media Transfer"
+      title={(job ? Boolean(job.selected) : isSelection) ? 'Send selected' : 'All Media Transfer'}
       hasCloseButton
     >
       {job ? renderProgress() : renderForm()}
