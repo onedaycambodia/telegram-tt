@@ -153,12 +153,6 @@ const MessageSelectToolbar = ({
     exitMessageSelectMode();
   });
 
-  const handleSendAll = useLastCallback(() => {
-    if (!chat) return;
-    openMediaTransfer(chat.id);
-    exitMessageSelectMode();
-  });
-
   const prevSelectedMessagesCount = usePreviousDeprecated(selectedMessagesCount || undefined, true);
   const renderingSelectedMessagesCount = isActive ? selectedMessagesCount : prevSelectedMessagesCount;
 
@@ -261,7 +255,6 @@ const MessageSelectToolbar = ({
               {Boolean(rendering.selectedMessagesCount) && rendering.canDeleteMessages && (
                 renderButton('delete', deleteLabel, handleDelete, true)
               )}
-              {renderButton('select', 'Send ALL messages in this chat (download + upload)', handleSendAll)}
               <span className="MessageSelectToolbar-count" title={formattedMessagesCount}>
                 {formattedMessagesCount}
               </span>
