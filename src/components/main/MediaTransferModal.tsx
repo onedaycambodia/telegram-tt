@@ -236,6 +236,7 @@ const MediaTransferModal = ({
 
         {s.failed > 0 && <div className={styles.headSub}>{s.failed} failed</div>}
         {s.error && <div className={styles.error}>{s.error}</div>}
+        {s.copying && <div className={styles.headSub}>Restricted chat: downloading and re-uploading (slower)</div>}
         {running && <div className={styles.headSub}>Keeps running if you close this window.</div>}
 
         <div className={styles.actions}>
