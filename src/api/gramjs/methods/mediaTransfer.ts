@@ -3,7 +3,7 @@ import { generateRandomBigInt } from '../../../lib/gramjs/Helpers';
 
 import type { ApiChat } from '../../types';
 
-import { buildInputPeer } from '../gramjsBuilders';
+import { buildInputChannel, buildInputPeer, getEntityTypeById } from '../gramjsBuilders';
 import * as clientModule from './client';
 
 const { invokeRequest } = clientModule;
@@ -70,6 +70,8 @@ export type StartMediaTransferParams = {
   skipIds: number[];
   /** NEW: download each file and upload it again instead of forwarding */
   download?: boolean;
+  /** NEW: only transfer these messages (selected in the chat) instead of the whole history */
+  messageIds?: number[];
 };
 
 const jobs = new Map<string, Job>();
@@ -374,6 +376,38 @@ async function collect(job: Job, fromPeer: any) {
     });
 
     offsetId = Math.min(...raw.map((m) => m.id));
+
+    job.collected = all.length;
+
+    await sleep(150);
+  }
+
+  return all.sort((a, b) => a.id - b.id);
+}
+
+/** Loads only the selected messages (100 ids per request). */
+async function fetchSelected(job: Job, chat: ApiChat, ids: number[]) {
+  const all: GramJs.Message[] = [];
+  const isChannel = getEntityTypeById(chat.id) === 'channel';
+
+  for (let i = 0; i < ids.length && !job.cancel; i += 100) {
+    const input = ids.slice(i, i + 100).map((id) => new GramJs.InputMessageID({ id }));
+
+    const res = await call(
+      job,
+      isChannel
+        ? new GramJs.channels.GetMessages({
+          channel: buildInputChannel(chat.id, chat.accessHash),
+          id: input,
+        })
+        : new GramJs.messages.GetMessages({ id: input }),
+    );
+
+    ((res?.messages || []) as any[]).forEach((m) => {
+      if (m instanceof GramJs.Message) {
+        all.push(m);
+      }
+    });
 
     job.collected = all.length;
 
@@ -705,6 +739,7 @@ async function run(job: Job, params: StartMediaTransferParams) {
     albums,
     skipIds,
     download,
+    messageIds,
   } = params;
 
   try {
@@ -724,7 +759,9 @@ async function run(job: Job, params: StartMediaTransferParams) {
       toChat.accessHash,
     );
 
-    const messages = await collect(job, fromPeer);
+    const messages = messageIds?.length
+      ? await fetchSelected(job, fromChat, messageIds)
+      : await collect(job, fromPeer);
 
     const skip = new Set(skipIds);
 
