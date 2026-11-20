@@ -643,6 +643,56 @@ async function sendAlbumByDownload(
   }));
 }
 
+/** Album WITHOUT re-upload: SendMultiMedia that points at the files already stored on Telegram.
+ *  (ForwardMessages can NOT make a new album - Telegram only keeps a group if the originals share one grouped_id.) */
+async function sendAlbumByReference(
+  job: Job,
+  toPeer: any,
+  items: Item[],
+  hideCaption: boolean,
+) {
+  const multiMedia = items.map((item) => {
+    const media: any = item.m.media;
+    let input: any;
+
+    if (item.kind === 'photo' && media?.photo instanceof GramJs.Photo) {
+      const p = media.photo;
+
+      input = new GramJs.InputMediaPhoto({
+        id: new GramJs.InputPhoto({
+          id: p.id,
+          accessHash: p.accessHash,
+          fileReference: p.fileReference,
+        }),
+      });
+    } else if (media?.document instanceof GramJs.Document) {
+      const d = media.document;
+
+      input = new GramJs.InputMediaDocument({
+        id: new GramJs.InputDocument({
+          id: d.id,
+          accessHash: d.accessHash,
+          fileReference: d.fileReference,
+        }),
+      });
+    } else {
+      throw new Error('NO_MEDIA_REFERENCE');
+    }
+
+    return new GramJs.InputSingleMedia({
+      media: input,
+      randomId: generateRandomBigInt(),
+      message: hideCaption ? '' : (item.m.message || ''),
+      entities: hideCaption ? undefined : (item.m.entities as any),
+    });
+  });
+
+  await call(job, new GramJs.messages.SendMultiMedia({
+    peer: toPeer,
+    multiMedia,
+  }));
+}
+
 /* ------------------------------------------------------------------------------------------ */
 /* Main job */
 
@@ -834,13 +884,18 @@ async function run(job: Job, params: StartMediaTransferParams) {
 
       /* ---- Forward mode ---- */
       try {
-        await forwardMessages(
-          job,
-          fromPeer,
-          toPeer,
-          unit.items,
-          hideCaption,
-        );
+        if (unit.album) {
+          // real album (forwarding can never create one)
+          await sendAlbumByReference(job, toPeer, unit.items, hideCaption);
+        } else {
+          await forwardMessages(
+            job,
+            fromPeer,
+            toPeer,
+            unit.items,
+            hideCaption,
+          );
+        }
 
         markSent(unit.items);
       } catch (err) {
@@ -852,7 +907,28 @@ async function run(job: Job, params: StartMediaTransferParams) {
           throw new Error(fatal);
         }
 
-        await forwardOneByOne(unit.items);
+        let recovered = false;
+
+        if (unit.album) {
+          // protected chat or bad file reference: download + re-upload, still as ONE album
+          try {
+            await sendAlbumByDownload(job, toPeer, unit.items, hideCaption);
+            markSent(unit.items);
+            recovered = true;
+          } catch (err2) {
+            if (job.cancel) break;
+
+            const fatal2 = fatalOf(err2);
+
+            if (fatal2) {
+              throw new Error(fatal2);
+            }
+          }
+        }
+
+        if (!recovered) {
+          await forwardOneByOne(unit.items);
+        }
       }
 
       await sleep(PAUSE_MS);
