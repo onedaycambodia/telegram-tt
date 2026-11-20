@@ -30,12 +30,12 @@ type StateProps = {
 };
 
 type Options = {
-  video: boolean; photo: boolean; text: boolean; hide: boolean; albums: boolean;
+  video: boolean; photo: boolean; text: boolean; hide: boolean; albums: boolean; direct: boolean;
 };
 
 const OPTS_KEY = 'mt-opts';
 const DEFAULT_OPTS: Options = {
-  video: true, photo: true, text: false, hide: true, albums: true,
+  video: true, photo: true, text: false, hide: true, albums: true, direct: true,
 };
 
 const TILES: [keyof Options, string, boolean][] = [
@@ -44,7 +44,10 @@ const TILES: [keyof Options, string, boolean][] = [
   ['text', 'Text Chat', false],
   ['hide', 'Hide Caption', false],
   ['albums', 'Send as Albums (random 5-6)', true],
+  ['direct', 'Direct download + upload (protected or not)', true],
 ];
+
+const SELECTED_TILES = ['hide', 'albums', 'direct'];
 
 const ROWS: [MediaTransferKind, string][] = [['video', 'Videos'], ['photo', 'Photo'], ['text', 'Text']];
 
@@ -82,7 +85,10 @@ function useTransferState() {
 const MediaTransferModal = ({
   chatsById, orderedIds, usersById, currentUserId,
 }: StateProps) => {
-  const { isOpen, chatId, job } = useTransferState();
+  const {
+    isOpen, chatId, job, messageIds,
+  } = useTransferState();
+  const isSelection = Boolean(messageIds?.length);
 
   const [opts, setOpts] = useState<Options>(readOpts);
   const [again, setAgain] = useState(false);
@@ -115,7 +121,7 @@ const MediaTransferModal = ({
   };
 
   const target = targetId ? chatsById[targetId] : undefined;
-  const canStart = Boolean(source && target && (opts.video || opts.photo || opts.text));
+  const canStart = Boolean(source && target && (isSelection || opts.video || opts.photo || opts.text));
 
   const handleStart = () => {
     if (!source || !target) return;
@@ -124,7 +130,11 @@ const MediaTransferModal = ({
       toChat: target,
       fromTitle: titleOf(source),
       toTitle: titleOf(target),
-      types: { video: opts.video, photo: opts.photo, text: opts.text },
+      types: isSelection
+        ? { video: true, photo: true, text: true }
+        : { video: opts.video, photo: opts.photo, text: opts.text },
+      download: opts.direct,
+      messageIds: isSelection ? messageIds : undefined,
       hideCaption: opts.hide,
       albums: opts.albums,
       fresh: again,
@@ -137,8 +147,10 @@ const MediaTransferModal = ({
         <div className={styles.head}>
           <span className={styles.badge}>➦</span>
           <div>
-            <div className={styles.headTitle}>All Media Transfer</div>
-            <div className={styles.headSub}>Entire chat, oldest to newest</div>
+            <div className={styles.headTitle}>{isSelection ? 'Send selected' : 'All Media Transfer'}</div>
+            <div className={styles.headSub}>
+              {isSelection ? `${messageIds!.length} selected messages` : 'Entire chat, oldest to newest'}
+            </div>
           </div>
         </div>
 
@@ -150,7 +162,7 @@ const MediaTransferModal = ({
 
         <div className={styles.label}>Include</div>
         <div className={styles.grid}>
-          {TILES.map(([key, label, wide]) => (
+          {TILES.filter(([key]) => !isSelection || SELECTED_TILES.includes(key)).map(([key, label, wide]) => (
             <button
               key={key}
               type="button"
@@ -161,14 +173,16 @@ const MediaTransferModal = ({
               <span>{label}</span>
             </button>
           ))}
-          <button
-            type="button"
-            className={buildClassName(styles.tile, styles.wide, again && styles.on)}
-            onClick={() => setAgain(!again)}
-          >
-            <span className={styles.box}><CheckIcon /></span>
-            <span>Send everything again (ignore history)</span>
-          </button>
+          {!isSelection && (
+            <button
+              type="button"
+              className={buildClassName(styles.tile, styles.wide, again && styles.on)}
+              onClick={() => setAgain(!again)}
+            >
+              <span className={styles.box}><CheckIcon /></span>
+              <span>Send everything again (ignore history)</span>
+            </button>
+          )}
         </div>
 
         <div className={styles.label}>Target chat</div>
