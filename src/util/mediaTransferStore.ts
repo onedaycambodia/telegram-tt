@@ -15,6 +15,8 @@ export type MediaTransferJob = {
   fromTitle: string;
   toTitle: string;
   albums: boolean;
+  /** number of selected messages (set when started from "select") */
+  selected?: number;
   status: MediaTransferStatus;
 };
 
@@ -132,7 +134,7 @@ export async function startMediaTransfer(params: {
   };
   setState({
     job: {
-      id, fromId: fromChat.id, toId: toChat.id, fromTitle, toTitle, albums, status,
+      id, fromId: fromChat.id, toId: toChat.id, fromTitle, toTitle, albums, status, selected: messageIds?.length,
     },
   });
   await callApi('startMediaTransfer', {
