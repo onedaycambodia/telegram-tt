@@ -1,58 +1,59 @@
-# Telegram Web A
+# All Media Transfer -> Ajaxy/telegram-tt (Telegram Web A)
 
-This project won the first prize 🥇 at [Telegram Lightweight Client Contest](https://contest.com/javascript-web-3) and now is an official Telegram client available to anyone at [web.telegram.org/a](https://web.telegram.org/a).
+Ported from Session-Login (Python/Pyrogram backend + ui.js) to a pure client-side feature.
+No server needed: everything runs through the GramJS worker of telegram-tt.
 
-According to the original contest rules, it has nearly zero dependencies and is fully based on its own [Teact](https://github.com/Ajaxy/teact) framework (which re-implements React paradigm). It also uses a custom version of [GramJS](https://github.com/gram-js/gramjs) as an MTProto implementation.
+## 1. Copy the files (same paths as in this folder)
+- src/api/gramjs/methods/mediaTransfer.ts
+- src/util/mediaTransferStore.ts
+- src/components/main/MediaTransferModal.tsx
+- src/components/main/MediaTransferModal.module.scss
 
-The project incorporates lots of technologically advanced features, modern Web APIs and techniques: WebSockets, Web Workers and WebAssembly, multi-level caching and PWA, voice recording and media streaming, cryptography and raw binary data operations, optimistic and progressive interfaces, complicated CSS/Canvas/SVG animations, reactive data streams, and so much more.
+## 2. Three small edits
 
-Feel free to explore, provide feedback and contribute.
-
-## Local setup
-
-```sh
-mv .env.example .env
-
-npm i
+### a) src/api/gramjs/methods/index.ts  - expose the worker methods
+```ts
+export * from './mediaTransfer';
 ```
 
-Obtain API ID and API hash on [my.telegram.org](https://my.telegram.org) and populate the `.env` file.
-
-## Dev mode
-
-```sh
-npm run dev
+### b) src/components/main/Main.tsx  - mount the modal
+```tsx
+import MediaTransferModal from './MediaTransferModal';
+...
+// inside the returned JSX, next to the other modals (e.g. near <Dialogs />):
+<MediaTransferModal />
 ```
 
-### Invoking API from console
-
-Start your dev server and locate GramJS worker in the console context.
-
-All constructors and functions available in global `GramJs` variable.
-
-Run `npm run gramjs:tl full` to get access to all available Telegram methods.
-
-Example usage:
-``` javascript
-await invoke(new GramJs.help.GetAppConfig())
+### c) src/components/middle/HeaderMenuContainer.tsx  - add the menu entry (chat "..." menu)
+```tsx
+import { openMediaTransfer } from '../../util/mediaTransferStore';
+...
+// with the other <MenuItem>s:
+<MenuItem icon="forward" onClick={() => { openMediaTransfer(chatId); onClose(); }}>
+  All Media Transfer
+</MenuItem>
 ```
+(`chatId` / `onClose` are already props of HeaderMenuContainer; if the names differ in your version, use those.)
 
-### Dependencies
-* [GramJS](https://github.com/gram-js/gramjs) ([MIT License](https://github.com/gram-js/gramjs/blob/master/LICENSE))
-* [fflate](https://github.com/101arrowz/fflate) ([MIT License](https://github.com/101arrowz/fflate/blob/master/LICENSE))
-* [cryptography](https://github.com/spalt08/cryptography) ([Apache License 2.0](https://github.com/spalt08/cryptography/blob/master/LICENSE))
-* [emoji-data](https://github.com/iamcal/emoji-data) ([MIT License](https://github.com/iamcal/emoji-data/blob/master/LICENSE))
-* [twemoji-parser](https://github.com/jdecked/twemoji-parser) ([MIT License](https://github.com/jdecked/twemoji-parser/blob/master/LICENSE.md))
-* [tlottie](https://github.com/dkaraush/tlottie) ([MIT License](https://github.com/dkaraush/tlottie/))
-* [opus-recorder](https://github.com/chris-rudmin/opus-recorder) ([Various Licenses](https://github.com/chris-rudmin/opus-recorder/blob/master/LICENSE.md))
-* [qr-code-styling](https://github.com/kozakdenys/qr-code-styling) ([MIT License](https://github.com/kozakdenys/qr-code-styling/blob/master/LICENSE))
-* [music-metadata](https://github.com/Borewit/music-metadata) ([MIT License](https://github.com/Borewit/music-metadata/blob/master/LICENSE.txt))
-* [Tiptap](https://github.com/ueberdosis/tiptap) ([MIT License](https://github.com/ueberdosis/tiptap/blob/main/LICENSE.md))
-* [marked](https://github.com/markedjs/marked) ([MIT License](https://github.com/markedjs/marked/blob/master/LICENSE.md))
-* [lowlight](https://github.com/wooorm/lowlight) ([MIT License](https://github.com/wooorm/lowlight/blob/main/license))
-* [idb-keyval](https://github.com/jakearchibald/idb-keyval) ([Apache License 2.0](https://github.com/jakearchibald/idb-keyval/blob/main/LICENCE))
-* [fastText](https://github.com/facebookresearch/fastText) ([MIT License](https://github.com/facebookresearch/fastText/blob/main/LICENSE)) and its [language identification model](https://fasttext.cc/docs/en/language-identification.html) ([CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/))
-* fastblur
+## 3. Run
+npm i && npm run dev  ->  open a chat -> "..." menu -> All Media Transfer.
 
-## Bug reports and Suggestions
-If you find an issue with this app, let Telegram know using the [Suggestions Platform](https://bugs.telegram.org/c/4002).
+## How it maps to the original
+| Original option | Here |
+|---|---|
+| Send with: Source Account | "This account" - forwards with dropAuthor (no "Forwarded from") |
+| Video / Photo / Text Chat | filters on raw messages (video excludes GIF, stickers, round videos) |
+| Hide Caption | dropMediaCaptions (forward) / empty caption (albums) |
+| Send as Albums (random 5-6) | messages.SendMultiMedia rebuilt from existing file ids - nothing downloaded/uploaded |
+| Send everything again | ignores the history ledger |
+| History / resume | ledger of sent message ids in localStorage per source->target pair |
+| Progress + Stop | worker job polled every 0.8s; Stop cancels |
+
+Not ported (not applicable in a single-account web client): Destination Account (Session B), convert 9:16, Railway/ffmpeg.
+
+## Notes
+- Written without access to the repo, so a few import names may differ slightly by version
+  (generateRandomBigInt in ../helpers, buildInputPeer in ../gramjsBuilders, invokeRequest in ./client,
+  hash: BigInt(0) in GetHistory). TypeScript will point to anything to adjust.
+- Source chats with "Restrict saving content" cannot be forwarded - the job stops with CHAT_FORWARDS_RESTRICTED.
+- The job lives in the browser tab: if the tab is closed it stops, and the next run resumes using the ledger.
