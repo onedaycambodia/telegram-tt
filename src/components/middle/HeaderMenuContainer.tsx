@@ -48,6 +48,7 @@ import {
   selectUserFullInfo,
 } from '../../global/selectors';
 import { isUserId } from '../../util/entities/ids';
+import { openMediaTransfer } from '../../util/mediaTransferStore';
 import { disableScrolling } from '../../util/scrollLock';
 import { buildAutoDeletePeriodOptions, DEFAULT_AUTO_DELETE_PERIODS } from '../common/helpers/autoDeletePeriods';
 
@@ -273,6 +274,11 @@ const HeaderMenuContainer = ({
       setIsMenuOpen(false);
       reportMessages({ chatId, messageIds: [] });
     }
+    onClose();
+  });
+
+  const handleMediaTransfer = useLastCallback(() => {
+    openMediaTransfer(chatId);
     onClose();
   });
 
@@ -914,6 +920,12 @@ const HeaderMenuContainer = ({
               {isBlocked ? lang('Unblock') : lang('NewContactBlock')}
             </MenuItem>
           )}
+          <MenuItem
+            icon="forward"
+            onClick={handleMediaTransfer}
+          >
+            All Media Transfer
+          </MenuItem>
           {canLeave && (
             <>
               <MenuSeparator />
