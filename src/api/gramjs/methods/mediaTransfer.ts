@@ -1,15 +1,31 @@
 
 import { Api as GramJs } from '../../../lib/gramjs';
+import { generateRandomBigInt } from '../../../lib/gramjs/Helpers';
 
 import type { ApiChat } from '../../types';
 
 import { buildInputPeer } from '../gramjsBuilders';
-import { generateRandomBigInt } from '../helpers';
 import * as clientModule from './client';
 
 const { invokeRequest } = clientModule;
 
+/**
+ * All Media Transfer - worker side (GramJS).
+ * Runs inside the API worker.
+ *
+ * Supports:
+ * - Progress tracking
+ * - Cancel
+ * - Skip previously transferred IDs
+ * - Text, photos and videos
+ * - Album planning
+ * - Caption hiding
+ * - Forward without original author
+ * - FLOOD_WAIT handling
+ */
+
 export type MediaTransferKind = 'video' | 'photo' | 'text';
+
 export type MediaTransferTypes = Record<MediaTransferKind, boolean>;
 
 export type MediaTransferStatus = {
@@ -25,9 +41,20 @@ export type MediaTransferStatus = {
   sentIds: number[];
 };
 
-type Job = MediaTransferStatus & { cancel: boolean };
-type Item = { m: GramJs.Message; kind: MediaTransferKind; album: boolean };
-type Unit = { album: boolean; items: Item[] };
+type Job = MediaTransferStatus & {
+  cancel: boolean;
+};
+
+type Item = {
+  m: GramJs.Message;
+  kind: MediaTransferKind;
+  album: boolean;
+};
+
+type Unit = {
+  album: boolean;
+  items: Item[];
+};
 
 export type StartMediaTransferParams = {
   jobId: string;
@@ -66,6 +93,7 @@ const errText = (err: unknown) =>
   String((err as any)?.message || (err as any)?.errorMessage || err);
 
 /* ------------------------------------------------------------------------------------------ */
+/* Job controls */
 
 export function startMediaTransfer(params: StartMediaTransferParams) {
   const job: Job = {
@@ -81,6 +109,7 @@ export function startMediaTransfer(params: StartMediaTransferParams) {
   };
 
   jobs.set(params.jobId, job);
+
   void run(job, params);
 
   return { jobId: params.jobId };
@@ -90,11 +119,12 @@ export function getMediaTransferStatus(
   jobId: string,
 ): MediaTransferStatus | undefined {
   const job = jobs.get(jobId);
+
   if (!job) return undefined;
 
   const { cancel, ...snapshot } = job;
 
-  const result = {
+  const result: MediaTransferStatus = {
     ...snapshot,
     tot: { ...job.tot },
     cnt: { ...job.cnt },
@@ -108,16 +138,19 @@ export function getMediaTransferStatus(
 
 export function cancelMediaTransfer(jobId: string) {
   const job = jobs.get(jobId);
-  if (job) job.cancel = true;
+
+  if (job) {
+    job.cancel = true;
+  }
 }
 
 /* ------------------------------------------------------------------------------------------ */
-/* Helpers */
+/* Classification */
 
 function classify(
   m: GramJs.Message,
 ): { kind?: MediaTransferKind; album: boolean } {
-  const { media } = m;
+  const media = m.media;
 
   if (
     !media ||
@@ -135,7 +168,10 @@ function classify(
       return { album: false };
     }
 
-    return { kind: 'photo', album: true };
+    return {
+      kind: 'photo',
+      album: true,
+    };
   }
 
   if (media instanceof GramJs.MessageMediaDocument) {
@@ -170,48 +206,19 @@ function classify(
   return { album: false };
 }
 
-/** Build InputMedia from Telegram's existing media references. */
-function toInputMedia(media: GramJs.TypeMessageMedia) {
-  if (
-    media instanceof GramJs.MessageMediaPhoto &&
-    media.photo instanceof GramJs.Photo
-  ) {
-    const { id, accessHash, fileReference } = media.photo;
+/* ------------------------------------------------------------------------------------------ */
+/* Request handling */
 
-    return new GramJs.InputMediaPhoto({
-      id: new GramJs.InputPhoto({
-        id,
-        accessHash,
-        fileReference,
-      }),
-    });
-  }
-
-  if (
-    media instanceof GramJs.MessageMediaDocument &&
-    media.document instanceof GramJs.Document
-  ) {
-    const { id, accessHash, fileReference } = media.document;
-
-    return new GramJs.InputMediaDocument({
-      id: new GramJs.InputDocument({
-        id,
-        accessHash,
-        fileReference,
-      }),
-    });
-  }
-
-  throw new Error('UNSUPPORTED_MEDIA');
-}
-
-/** invokeRequest + FLOOD_WAIT handling + cancellation */
 async function call(job: Job, request: any): Promise<any> {
   for (let attempt = 0; attempt < 6; attempt++) {
-    if (job.cancel) throw new Error('CANCELLED');
+    if (job.cancel) {
+      throw new Error('CANCELLED');
+    }
 
     try {
-      return await invokeRequest(request, { shouldThrow: true });
+      return await invokeRequest(request, {
+        shouldThrow: true,
+      });
     } catch (err) {
       const text = errText(err);
 
@@ -219,9 +226,12 @@ async function call(job: Job, request: any): Promise<any> {
         /FLOOD_WAIT_?(\d+)|wait of (\d+) seconds/i,
       );
 
-      if (!flood) throw err;
+      if (!flood) {
+        throw err;
+      }
 
       const seconds = Number(flood[1] || flood[2]);
+
       await sleep((seconds + 1) * 1000);
     }
   }
@@ -231,12 +241,16 @@ async function call(job: Job, request: any): Promise<any> {
 
 function fatalOf(err: unknown) {
   const text = errText(err);
+
   return FATAL.find((f) => text.includes(f));
 }
 
-/** Collect history, oldest -> newest. */
+/* ------------------------------------------------------------------------------------------ */
+/* History collection */
+
 async function collect(job: Job, fromPeer: any) {
   const all: GramJs.Message[] = [];
+
   let offsetId = 0;
 
   while (!job.cancel) {
@@ -256,13 +270,18 @@ async function collect(job: Job, fromPeer: any) {
 
     const raw: any[] = res?.messages || [];
 
-    if (!raw.length) break;
+    if (!raw.length) {
+      break;
+    }
 
     raw.forEach((m) => {
-      if (m instanceof GramJs.Message) all.push(m);
+      if (m instanceof GramJs.Message) {
+        all.push(m);
+      }
     });
 
     offsetId = Math.min(...raw.map((m) => m.id));
+
     job.collected = all.length;
 
     await sleep(150);
@@ -271,7 +290,9 @@ async function collect(job: Job, fromPeer: any) {
   return all.sort((a, b) => a.id - b.id);
 }
 
-/** Build album units and forward batches, preserving message order. */
+/* ------------------------------------------------------------------------------------------ */
+/* Planning */
+
 function plan(items: Item[], albums: boolean): Unit[] {
   const units: Unit[] = [];
 
@@ -281,7 +302,10 @@ function plan(items: Item[], albums: boolean): Unit[] {
 
   const flushFwd = () => {
     if (fwd.length) {
-      units.push({ album: false, items: fwd });
+      units.push({
+        album: false,
+        items: fwd,
+      });
     }
 
     fwd = [];
@@ -290,7 +314,11 @@ function plan(items: Item[], albums: boolean): Unit[] {
   const flushCarry = () => {
     if (carry.length >= 2) {
       flushFwd();
-      units.push({ album: true, items: carry });
+
+      units.push({
+        album: true,
+        items: carry,
+      });
     } else {
       fwd.push(...carry);
     }
@@ -311,6 +339,7 @@ function plan(items: Item[], albums: boolean): Unit[] {
     }
 
     flushCarry();
+
     fwd.push(item);
 
     if (fwd.length >= FORWARD_BATCH) {
@@ -325,7 +354,32 @@ function plan(items: Item[], albums: boolean): Unit[] {
 }
 
 /* ------------------------------------------------------------------------------------------ */
-/* Job */
+/* Forwarding */
+
+async function forwardMessages(
+  job: Job,
+  fromPeer: any,
+  toPeer: any,
+  items: Item[],
+  hideCaption: boolean,
+) {
+  if (!items.length) return;
+
+  await call(
+    job,
+    new GramJs.messages.ForwardMessages({
+      fromPeer,
+      toPeer,
+      id: items.map((i) => i.m.id),
+      randomId: items.map(() => generateRandomBigInt()),
+      dropAuthor: true,
+      dropMediaCaptions: hideCaption || undefined,
+    }),
+  );
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Main job */
 
 async function run(job: Job, params: StartMediaTransferParams) {
   const {
@@ -351,27 +405,38 @@ async function run(job: Job, params: StartMediaTransferParams) {
     const messages = await collect(job, fromPeer);
 
     const skip = new Set(skipIds);
+
     const all: Item[] = [];
 
     messages.forEach((m) => {
       const { kind, album } = classify(m);
 
       if (kind && types[kind]) {
-        all.push({ m, kind, album });
+        all.push({
+          m,
+          kind,
+          album,
+        });
       }
     });
+
+    /* Count selected media */
 
     (['video', 'photo', 'text'] as MediaTransferKind[]).forEach((k) => {
       if (!types[k]) return;
 
-      job.tot[k] = all.filter((i) => i.kind === k).length;
+      job.tot[k] = all.filter(
+        (i) => i.kind === k,
+      ).length;
 
       job.cnt[k] = all.filter(
         (i) => i.kind === k && skip.has(i.m.id),
       ).length;
     });
 
-    const todo = all.filter((i) => !skip.has(i.m.id));
+    const todo = all.filter(
+      (i) => !skip.has(i.m.id),
+    );
 
     job.total = all.length;
     job.done = all.length - todo.length;
@@ -383,6 +448,8 @@ async function run(job: Job, params: StartMediaTransferParams) {
 
     job.status = 'running';
 
+    /* Progress */
+
     const markSent = (items: Item[]) => {
       items.forEach((i) => {
         job.cnt[i.kind] = (job.cnt[i.kind] || 0) + 1;
@@ -392,34 +459,32 @@ async function run(job: Job, params: StartMediaTransferParams) {
       job.done += items.length;
     };
 
-    /** Forward messages without displaying the original author. */
-    const rawForward = (items: Item[]) =>
-      call(
-        job,
-        new GramJs.messages.ForwardMessages({
-          fromPeer,
-          toPeer,
-          id: items.map((i) => i.m.id),
-          randomId: items.map(() => generateRandomBigInt()),
-          dropAuthor: true,
-          dropMediaCaptions: hideCaption || undefined,
-        }),
-      );
+    /* Fallback: send individually */
 
     const forwardOneByOne = async (items: Item[]) => {
       for (const item of items) {
         if (job.cancel) return;
 
         try {
-          await rawForward([item]);
+          await forwardMessages(
+            job,
+            fromPeer,
+            toPeer,
+            [item],
+            hideCaption,
+          );
+
           markSent([item]);
         } catch (err) {
-          if (errText(err).includes('CANCELLED') || job.cancel) {
+          if (job.cancel || errText(err).includes('CANCELLED')) {
             return;
           }
 
           const fatal = fatalOf(err);
-          if (fatal) throw new Error(fatal);
+
+          if (fatal) {
+            throw new Error(fatal);
+          }
 
           job.failed++;
           job.done++;
@@ -429,54 +494,31 @@ async function run(job: Job, params: StartMediaTransferParams) {
       }
     };
 
-    const sendAlbum = async (items: Item[]) => {
-      await call(
-        job,
-        new GramJs.messages.SendMultiMedia({
-          peer: toPeer,
-          multiMedia: items.map(({ m }) =>
-            new GramJs.InputSingleMedia({
-              media: toInputMedia(m.media!),
-              randomId: generateRandomBigInt(),
-              message: hideCaption ? '' : m.message || '',
-              entities: hideCaption ? undefined : m.entities,
-            }),
-          ),
-        }),
-      );
-    };
+    /* Execute planned units */
 
     for (const unit of plan(todo, albums)) {
       if (job.cancel) break;
 
       try {
-        if (unit.album) {
-          try {
-            await sendAlbum(unit.items);
-            markSent(unit.items);
-          } catch (err) {
-            if (job.cancel || fatalOf(err)) throw err;
+        await forwardMessages(
+          job,
+          fromPeer,
+          toPeer,
+          unit.items,
+          hideCaption,
+        );
 
-            await forwardOneByOne(unit.items);
-          }
-        } else {
-          try {
-            await rawForward(unit.items);
-            markSent(unit.items);
-          } catch (err) {
-            if (job.cancel || fatalOf(err)) throw err;
-
-            await forwardOneByOne(unit.items);
-          }
-        }
+        markSent(unit.items);
       } catch (err) {
         if (job.cancel) break;
 
         const fatal = fatalOf(err);
-        if (fatal) throw new Error(fatal);
 
-        job.failed += unit.items.length;
-        job.done += unit.items.length;
+        if (fatal) {
+          throw new Error(fatal);
+        }
+
+        await forwardOneByOne(unit.items);
       }
 
       await sleep(PAUSE_MS);
@@ -488,7 +530,11 @@ async function run(job: Job, params: StartMediaTransferParams) {
       job.status = 'cancelled';
     } else {
       job.status = 'error';
-      job.error = errText(err).replace(/^Error:\s*/, '');
+
+      job.error = errText(err).replace(
+        /^Error:\s*/,
+        '',
+      );
     }
   }
 }
