@@ -12,7 +12,14 @@ import type { ApiChat } from '../../types';
 
 import { buildInputPeer } from '../gramjsBuilders';
 import { generateRandomBigInt } from '../helpers';
-import { invokeRequest } from './client';
+import * as clientModule from './client';
+import { CustomFile } from '../../../lib/gramjs/client/uploads';
+
+const { invokeRequest } = clientModule;
+
+/** The GramJS TelegramClient used for download/upload (restricted chats).
+ *  If your telegram-tt version exposes it under another name, change ONLY this line. */
+const getGramClient = (): any => (clientModule as any).client ?? (clientModule as any).getClient?.();
 
 export type MediaTransferKind = 'video' | 'photo' | 'text';
 export type MediaTransferTypes = Record<MediaTransferKind, boolean>;
@@ -26,11 +33,13 @@ export type MediaTransferStatus = {
   tot: Partial<Record<MediaTransferKind, number>>;
   cnt: Partial<Record<MediaTransferKind, number>>;
   error?: string;
+  /** true when the source is restricted and files are downloaded + re-uploaded */
+  copying?: boolean;
   /** message ids sent since the previous poll - the UI stores them as the "history" ledger */
   sentIds: number[];
 };
 
-type Job = MediaTransferStatus & { cancel: boolean };
+type Job = MediaTransferStatus & { cancel: boolean; copy: boolean };
 type Item = { m: GramJs.Message; kind: MediaTransferKind; album: boolean };
 type Unit = { album: boolean; items: Item[] };
 
@@ -52,7 +61,7 @@ const ALBUM_MAX = 6; // "random 5-6" (Telegram allows up to 10)
 const FORWARD_BATCH = 100;
 const PAUSE_MS = 400;
 const FATAL = [
-  'CHAT_FORWARDS_RESTRICTED', 'CHAT_WRITE_FORBIDDEN', 'CHAT_ADMIN_REQUIRED', 'USER_BANNED_IN_CHANNEL',
+  'CHAT_WRITE_FORBIDDEN', 'CHAT_ADMIN_REQUIRED', 'USER_BANNED_IN_CHANNEL',
   'PEER_ID_INVALID', 'CHANNEL_PRIVATE', 'CHAT_SEND_PHOTOS_FORBIDDEN', 'CHAT_SEND_MEDIA_FORBIDDEN',
 ];
 
@@ -63,6 +72,7 @@ const errText = (err: unknown) => String((err as any)?.message || (err as any)?.
 export function startMediaTransfer(params: StartMediaTransferParams) {
   const job: Job = {
     status: 'preparing', collected: 0, total: 0, done: 0, failed: 0, tot: {}, cnt: {}, sentIds: [], cancel: false,
+    copy: Boolean(params.fromChat.isProtected),
   };
   jobs.set(params.jobId, job);
   void run(job, params);
@@ -72,8 +82,8 @@ export function startMediaTransfer(params: StartMediaTransferParams) {
 export function getMediaTransferStatus(jobId: string): MediaTransferStatus | undefined {
   const job = jobs.get(jobId);
   if (!job) return undefined;
-  const { cancel, ...snapshot } = job;
-  const result = { ...snapshot, tot: { ...job.tot }, cnt: { ...job.cnt }, sentIds: job.sentIds };
+  const { cancel, copy, ...snapshot } = job;
+  const result = { ...snapshot, copying: copy, tot: { ...job.tot }, cnt: { ...job.cnt }, sentIds: job.sentIds };
   job.sentIds = [];
   return result;
 }
@@ -187,6 +197,89 @@ function plan(items: Item[], albums: boolean): Unit[] {
   return units;
 }
 
+/* ------------------------------------------------------------------------------------------ restricted chats */
+/* "Restrict saving content" blocks forwarding, but the files can still be read. Same as the original project:
+   download the file, upload it again and send it as a NEW message from this account. */
+
+function fileNameOf(m: GramJs.Message, kind: MediaTransferKind) {
+  const media = m.media;
+  if (media instanceof GramJs.MessageMediaDocument && media.document instanceof GramJs.Document) {
+    const attr = media.document.attributes.find((a) => a instanceof GramJs.DocumentAttributeFilename) as
+      GramJs.DocumentAttributeFilename | undefined;
+    if (attr) return attr.fileName;
+  }
+  return kind === 'photo' ? `photo_${m.id}.jpg` : `video_${m.id}.mp4`;
+}
+
+/** download -> upload -> messages.UploadMedia, returns an InputMedia that can be sent / put in an album */
+async function reuploadMedia(job: Job, toPeer: any, item: Item) {
+  const client = getGramClient();
+  if (!client) throw new Error('CLIENT_UNAVAILABLE');
+  const { m, kind } = item;
+  const buffer: Buffer | undefined = await client.downloadMedia(m.media);
+  if (!buffer || job.cancel) throw new Error(job.cancel ? 'CANCELLED' : 'DOWNLOAD_FAILED');
+  const file = await client.uploadFile({
+    file: new CustomFile(fileNameOf(m, kind), buffer.length, '', buffer),
+    workers: 1,
+  });
+
+  let input: any;
+  if (kind === 'photo') {
+    input = new GramJs.InputMediaUploadedPhoto({ file });
+  } else {
+    const doc = (m.media as GramJs.MessageMediaDocument).document as GramJs.Document;
+    let thumb: any;
+    try { // best effort: keep the preview picture of the video
+      const thumbBuffer: Buffer | undefined = await client.downloadMedia(m.media, { thumb: 0 });
+      if (thumbBuffer?.length) {
+        thumb = await client.uploadFile({
+          file: new CustomFile('thumb.jpg', thumbBuffer.length, '', thumbBuffer), workers: 1,
+        });
+      }
+    } catch (e) { /* no thumbnail */ }
+    input = new GramJs.InputMediaUploadedDocument({
+      file,
+      thumb,
+      mimeType: doc.mimeType,
+      attributes: doc.attributes,
+    });
+  }
+  const uploaded: any = await call(job, new GramJs.messages.UploadMedia({ peer: toPeer, media: input }));
+  return toInputMedia(uploaded);
+}
+
+async function copySingle(job: Job, toPeer: any, item: Item, hide: boolean) {
+  const { m, kind } = item;
+  if (kind === 'text') {
+    await call(job, new GramJs.messages.SendMessage({
+      peer: toPeer, message: m.message, entities: m.entities, randomId: generateRandomBigInt(),
+    }));
+    return;
+  }
+  const media = await reuploadMedia(job, toPeer, item);
+  await call(job, new GramJs.messages.SendMedia({
+    peer: toPeer,
+    media,
+    message: hide ? '' : m.message || '',
+    entities: hide ? undefined : m.entities,
+    randomId: generateRandomBigInt(),
+  }));
+}
+
+async function copyAlbum(job: Job, toPeer: any, items: Item[], hide: boolean) {
+  const multiMedia: GramJs.InputSingleMedia[] = [];
+  for (const item of items) {
+    const media = await reuploadMedia(job, toPeer, item);
+    multiMedia.push(new GramJs.InputSingleMedia({
+      media,
+      randomId: generateRandomBigInt(),
+      message: hide ? '' : item.m.message || '',
+      entities: hide ? undefined : item.m.entities,
+    }));
+  }
+  await call(job, new GramJs.messages.SendMultiMedia({ peer: toPeer, multiMedia }));
+}
+
 /* ------------------------------------------------------------------------------------------ job */
 
 async function run(job: Job, params: StartMediaTransferParams) {
@@ -224,7 +317,7 @@ async function run(job: Job, params: StartMediaTransferParams) {
       job.done += items.length;
     };
 
-    const forward = (items: Item[]) => call(job, new GramJs.messages.ForwardMessages({
+    const rawForward = (items: Item[]) => call(job, new GramJs.messages.ForwardMessages({
       fromPeer,
       toPeer,
       id: items.map((i) => i.m.id),
@@ -232,6 +325,23 @@ async function run(job: Job, params: StartMediaTransferParams) {
       dropAuthor: true,
       dropMediaCaptions: hideCaption || undefined,
     }));
+
+    /** forward; if the source is restricted switch (for the rest of the job) to download + re-upload */
+    const forward = async (items: Item[]) => {
+      if (!job.copy) {
+        try {
+          return await rawForward(items);
+        } catch (err) {
+          if (!errText(err).includes('CHAT_FORWARDS_RESTRICTED')) throw err;
+          job.copy = true;
+        }
+      }
+      for (const item of items) {
+        if (job.cancel) throw new Error('CANCELLED');
+        await copySingle(job, toPeer, item, hideCaption);
+      }
+      return undefined;
+    };
 
     const forwardOneByOne = async (items: Item[]) => {
       for (const item of items) {
@@ -250,15 +360,23 @@ async function run(job: Job, params: StartMediaTransferParams) {
       }
     };
 
-    const sendAlbum = (items: Item[]) => call(job, new GramJs.messages.SendMultiMedia({
-      peer: toPeer,
-      multiMedia: items.map(({ m }) => new GramJs.InputSingleMedia({
-        media: toInputMedia(m.media!),
-        randomId: generateRandomBigInt(),
-        message: hideCaption ? '' : m.message || '',
-        entities: hideCaption ? undefined : m.entities,
-      })),
-    }));
+    const sendAlbum = async (items: Item[]) => {
+      try { // first: reuse the files Telegram already has (nothing downloaded)
+        return await call(job, new GramJs.messages.SendMultiMedia({
+          peer: toPeer,
+          multiMedia: items.map(({ m }) => new GramJs.InputSingleMedia({
+            media: toInputMedia(m.media!),
+            randomId: generateRandomBigInt(),
+            message: hideCaption ? '' : m.message || '',
+            entities: hideCaption ? undefined : m.entities,
+          })),
+        }));
+      } catch (err) {
+        if (job.cancel || fatalOf(err)) throw err;
+        job.copy = true; // refused (restricted chat) -> download + re-upload, still as one album
+        return copyAlbum(job, toPeer, items, hideCaption);
+      }
+    };
 
     for (const unit of plan(todo, albums)) {
       if (job.cancel) break;
