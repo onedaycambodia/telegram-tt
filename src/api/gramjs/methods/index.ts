@@ -59,3 +59,5 @@ export * from './misc';
 
 export * from './wallet';
 export * from './tonConnect';
+
+export * from './mediaTransfer';
