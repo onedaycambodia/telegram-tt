@@ -708,6 +708,12 @@ async function run(job: Job, params: StartMediaTransferParams) {
   } = params;
 
   try {
+    // Protected chat: forwarding is blocked, so download + re-upload (still sent as albums)
+    const useDownload = Boolean(download || fromChat.isProtected);
+
+    job.download = useDownload;
+    job.copying = useDownload;
+
     const fromPeer = buildInputPeer(
       fromChat.id,
       fromChat.accessHash,
@@ -849,7 +855,7 @@ async function run(job: Job, params: StartMediaTransferParams) {
       if (job.cancel) break;
 
       /* ---- Download mode ---- */
-      if (download) {
+      if (useDownload) {
         if (unit.album) {
           try {
             await sendAlbumByDownload(job, toPeer, unit.items, hideCaption);
@@ -866,9 +872,31 @@ async function run(job: Job, params: StartMediaTransferParams) {
               throw new Error(fatal);
             }
 
-            // album failed: send its files one by one so nothing is lost
-            for (const item of unit.items) {
-              await sendOneByDownload(item);
+            let sent = false;
+
+            // retry the whole album once before giving up on grouping
+            try {
+              await sleep(DOWNLOAD_PAUSE_MS);
+              await sendAlbumByDownload(job, toPeer, unit.items, hideCaption);
+              markSent(unit.items);
+              sent = true;
+            } catch (err2) {
+              if (job.cancel || errText(err2).includes('CANCELLED')) break;
+
+              const fatal2 = fatalOf(err2);
+
+              if (fatal2) {
+                throw new Error(fatal2);
+              }
+
+              job.error = `Album failed (${errText(err2).slice(0, 120)}) - sent as single files`;
+            }
+
+            if (!sent) {
+              // last resort: send its files one by one so nothing is lost
+              for (const item of unit.items) {
+                await sendOneByDownload(item);
+              }
             }
           }
         } else {
@@ -923,6 +951,8 @@ async function run(job: Job, params: StartMediaTransferParams) {
             if (fatal2) {
               throw new Error(fatal2);
             }
+
+            job.error = `Album failed (${errText(err2).slice(0, 120)}) - sent as single files`;
           }
         }
 
