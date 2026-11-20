@@ -19,6 +19,7 @@ import {
 import { selectSharedSettings } from '../../global/selectors/sharedState';
 import buildClassName from '../../util/buildClassName';
 import captureKeyboardListeners from '../../util/captureKeyboardListeners';
+import { openMediaTransfer } from '../../util/mediaTransferStore';
 
 import useFlag from '../../hooks/useFlag';
 import useFrozenProps from '../../hooks/useFrozenProps';
@@ -145,6 +146,19 @@ const MessageSelectToolbar = ({
     handleDownload();
   });
 
+  // Direct send: download + upload, works for protected AND unprotected chats
+  const handleSendSelected = useLastCallback(() => {
+    if (!chat || !selectedMessageIds?.length) return;
+    openMediaTransfer(chat.id, selectedMessageIds);
+    exitMessageSelectMode();
+  });
+
+  const handleSendAll = useLastCallback(() => {
+    if (!chat) return;
+    openMediaTransfer(chat.id);
+    exitMessageSelectMode();
+  });
+
   const prevSelectedMessagesCount = usePreviousDeprecated(selectedMessagesCount || undefined, true);
   const renderingSelectedMessagesCount = isActive ? selectedMessagesCount : prevSelectedMessagesCount;
 
@@ -247,6 +261,7 @@ const MessageSelectToolbar = ({
               {Boolean(rendering.selectedMessagesCount) && rendering.canDeleteMessages && (
                 renderButton('delete', deleteLabel, handleDelete, true)
               )}
+              {renderButton('select', 'Send ALL messages in this chat (download + upload)', handleSendAll)}
               <span className="MessageSelectToolbar-count" title={formattedMessagesCount}>
                 {formattedMessagesCount}
               </span>
@@ -262,6 +277,7 @@ const MessageSelectToolbar = ({
                   {!rendering.hasProtectedMessage && (
                     renderButton('copy', copyLabel, handleCopy)
                   )}
+                  {renderButton('share-filled', 'Send selected (download + upload)', handleSendSelected)}
                   {rendering.messageListType !== 'scheduled' && rendering.canForwardMessages && (
                     renderButton(
                       'forward', lang('ChatForwardActionHeader'), openForwardMenuForSelectedMessages,
