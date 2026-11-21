@@ -37,11 +37,20 @@ const POLL_MS = 800;
 const SERVER_POLL_MS = 1500;
 const TOKEN_KEY = 'mt-server-token';
 
+/** The server reports one of these when the account's session was terminated/logged out elsewhere. */
+const TERMINATED_SESSION_RE = /AUTH_KEY_UNREGISTERED|SESSION_REVOKED|USER_DEACTIVATED|AUTH_KEY_INVALID/;
+
 let state: MediaTransferState = { isOpen: false };
 const listeners = new Set<() => void>();
 let timer: number | undefined;
 let serverCursor = 0;
 let linkAborted = false;
+/** Params of the last server-run job, kept so a dead session can be relinked and the job resumed automatically. */
+let lastServerStart: Parameters<typeof startMediaTransfer>[0] | undefined;
+/** One automatic relink-and-resume attempt per job; avoids looping forever if relinking itself fails. */
+let autoRelinkTried = false;
+/** True only for the internal call that resumes a job after an automatic relink. */
+let isAutoResume = false;
 
 function setState(next: Partial<MediaTransferState>) {
   state = { ...state, ...next };
@@ -198,6 +207,40 @@ function pollServer() {
       serverCursor = status.sentIds.length ? snap.status.sentCount : serverCursor;
       if (status.sentIds.length) appendLedger(job.fromId, job.toId, status.sentIds);
       setState({ job: { ...job, status: { ...status, sentIds: [] } } });
+
+      // Session was terminated (e.g. the account's "Devices" list revoked it): relink with a fresh
+      // QR token (the already-logged-in browser accepts it, no typing needed) and resume this same
+      // transfer where it left off, instead of leaving the user with a dead "Failed" job.
+      if (status.status === 'error' && status.error && TERMINATED_SESSION_RE.test(status.error)
+        && lastServerStart && !autoRelinkTried) {
+        autoRelinkTried = true;
+        const params = lastServerStart;
+        setState({
+          job: { ...job, status: { ...status, sentIds: [], note: 'Session was terminated - relinking automatically…' } },
+        });
+        void (async () => {
+          try {
+            await ensureLinked(params.accountId!);
+            isAutoResume = true;
+            await startMediaTransfer({ ...params, fresh: false });
+          } catch (relinkErr) {
+            const current = state.job;
+            if (!current) return;
+            setState({
+              job: {
+                ...current,
+                status: {
+                  ...current.status,
+                  status: 'error',
+                  error: relinkErr instanceof Error ? relinkErr.message : String(relinkErr),
+                },
+              },
+            });
+          }
+        })();
+        return;
+      }
+
       if (isActive(status)) pollServer();
     } catch (e) {
       if (e instanceof Error && e.message === 'Job not found') {
@@ -287,6 +330,10 @@ export async function startMediaTransfer(params: {
   const {
     fromChat, toChat, fromTitle, toTitle, types, hideCaption, albums, fresh, download, messageIds, accountId,
   } = params;
+  const resuming = isAutoResume;
+  isAutoResume = false;
+  if (!resuming) autoRelinkTried = false;
+  lastServerStart = accountId ? params : undefined;
   const id = `${Date.now()}`;
   const status: MediaTransferStatus = {
     status: 'preparing', collected: 0, total: 0, done: 0, failed: 0, tot: {}, cnt: {}, sentIds: [],
@@ -332,13 +379,30 @@ export async function startMediaTransfer(params: {
     } catch (e) {
       setState({ setupNote: undefined });
       if (!(e instanceof ServerUnavailable)) {
-        const cancelled = e instanceof Error && e.message === 'LINK_CANCELLED';
+        const message = e instanceof Error ? e.message : String(e);
+
+        // Can happen right here too (e.g. right after a server redeploy, before any job exists):
+        // relink with a fresh QR token and retry this same start once, automatically.
+        if (TERMINATED_SESSION_RE.test(message) && !resuming && !autoRelinkTried) {
+          autoRelinkTried = true;
+          setState({
+            job: {
+              id, fromId: fromChat.id, toId: toChat.id, fromTitle, toTitle, albums, selected: messageIds?.length,
+              status: { ...status, note: 'Session was terminated - relinking automatically…' },
+            },
+          });
+          isAutoResume = true;
+          await startMediaTransfer(params);
+          return;
+        }
+
+        const cancelled = message === 'LINK_CANCELLED';
         setState({
           job: {
             id, fromId: fromChat.id, toId: toChat.id, fromTitle, toTitle, albums, selected: messageIds?.length,
             status: cancelled
               ? { ...status, status: 'cancelled' }
-              : { ...status, status: 'error', error: e instanceof Error ? e.message : String(e) },
+              : { ...status, status: 'error', error: message },
           },
         });
         return;
