@@ -188,6 +188,22 @@
 
 #LeftMainHeader,
 .Menu.main-menu.in-portal {
+  .account-menu-row {
+    position: relative;
+
+    .account-logout-button {
+      position: absolute;
+      z-index: 2;
+      top: 50%;
+      inset-inline-end: 0.5rem;
+      transform: translateY(-50%);
+    }
+
+    .account-menu-item {
+      padding-inline-end: 2.75rem;
+    }
+  }
+
   .account-menu-item {
     --custom-emoji-size: 1rem;
 

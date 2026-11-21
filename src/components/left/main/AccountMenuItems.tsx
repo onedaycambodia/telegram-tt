@@ -8,6 +8,7 @@ import { temporarilySuspendCacheUpdate } from '../../../global/cache';
 import { getCurrentMaxAccountCount, getCurrentProdAccountCount } from '../../../global/helpers';
 import { IS_SAFARI } from '../../../util/browser/windowEnvironment';
 import { getAccountSlotUrl } from '../../../util/multiaccount';
+import { PENDING_LOGOUT_KEY_PREFIX } from '../../../util/pendingLogout';
 import { REM } from '../../common/helpers/mediaDimensions';
 
 import useLang from '../../../hooks/useLang';
@@ -16,6 +17,7 @@ import useMultiaccountInfo from '../../../hooks/useMultiaccountInfo';
 
 import Avatar from '../../common/Avatar';
 import FullNameTitle from '../../common/FullNameTitle';
+import Button from '../../ui/Button';
 import MenuItem from '../../ui/MenuItem';
 import MenuSeparator from '../../ui/MenuSeparator';
 
@@ -34,7 +36,7 @@ const AccountMenuItems = ({
   onSelectCurrent,
   onSwitchAccount,
 }: OwnProps) => {
-  const { showNotification } = getActions();
+  const { showNotification, openSettingsConfirmation } = getActions();
   const lang = useLang();
   const accounts = useMultiaccountInfo(currentUser);
 
@@ -81,6 +83,25 @@ const AccountMenuItems = ({
     onSwitchAccount(e.currentTarget.href);
   }
 
+  const handleLogoutClick = useLastCallback((account: AccountInfo, slot: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (account.userId === currentUser.id) {
+      openSettingsConfirmation({ confirmation: 'logOut' });
+      return;
+    }
+
+    // The other account lives in its own tab/slot: open it and let it show the log out confirmation
+    try {
+      localStorage.setItem(`${PENDING_LOGOUT_KEY_PREFIX}${slot}`, '1');
+    } catch (err) {
+      // Do nothing
+    }
+    if (IS_SAFARI) temporarilySuspendCacheUpdate();
+    onSwitchAccount(getAccountSlotUrl(slot));
+  });
+
   const newAccountUrl = useMemo(() => {
     if (!Object.values(accounts).length) {
       return undefined;
@@ -115,7 +136,7 @@ const AccountMenuItems = ({
           const hasSeparator = account.userId === currentUser.id && (newAccountUrl || arr.length > 1);
 
           return (
-            <>
+            <div key={slot} className="account-menu-row">
               <MenuItem
                 className="account-menu-item"
                 customIcon={(
@@ -132,8 +153,17 @@ const AccountMenuItems = ({
                 {account.isTest && <span className="account-menu-item-test">T</span>}
                 <FullNameTitle peer={mockUser} withEmojiStatus emojiStatusSize={REM} />
               </MenuItem>
+              <Button
+                round
+                size="tiny"
+                color="translucent"
+                className="account-logout-button"
+                ariaLabel={lang('LogOutTitle')}
+                onClick={(e) => handleLogoutClick(account, Number(slot), e)}
+                iconName="logout"
+              />
               {hasSeparator && <MenuSeparator />}
-            </>
+            </div>
           );
         })}
       {newAccountUrl && (
