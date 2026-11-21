@@ -1,0 +1,13 @@
+{
+  "name": "tt-transfer-server",
+  "private": true,
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "big-integer": "^1.6.52",
+    "telegram": "^2.26.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
