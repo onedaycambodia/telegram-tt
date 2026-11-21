@@ -80,7 +80,9 @@ const ALBUM_MIN = 5;
 const ALBUM_MAX = 6;
 const FORWARD_BATCH = 100;
 const PAUSE_MS = 400;
-const DOWNLOAD_PAUSE_MS = 1500; // pause between sends in download mode (avoids FloodWait)
+const DOWNLOAD_PAUSE_MS = 500; // pause between sends in download mode (was 1500; FloodWait is still waited out)
+const PARALLEL_FILES = 4; // files of one album downloaded + uploaded at the same time
+const UPLOAD_WORKERS = 4; // parallel upload parts per file
 
 const FLOOD_TRIES = 20; // floods in a row before an item finally fails
 const FLOOD_MAX_S = 3700; // longest single flood we wait out
@@ -562,7 +564,7 @@ async function prepareMedia(
   const inputFile: any = await withRetry(job, () => stallGuard(
     job,
     'upload',
-    (beat) => client.uploadFile({ file, onProgress: beat, workers: 1 }),
+    (beat) => client.uploadFile({ file, onProgress: beat, workers: UPLOAD_WORKERS }),
   ));
 
   // 3) turn the uploaded file into a reusable InputMedia
@@ -660,10 +662,24 @@ async function sendAlbumByDownload(
   items: Item[],
   hideCaption: boolean,
 ) {
-  const prepared: Prepared[] = [];
+  const prepared: Prepared[] = new Array(items.length);
+  let next = 0;
 
-  for (const item of items) {
-    prepared.push(await prepareMedia(job, toPeer, item, hideCaption));
+  // PARALLEL_FILES workers take files from the list, order of the album is kept
+  const worker = async () => {
+    while (next < items.length && !job.cancel) {
+      const index = next++;
+
+      prepared[index] = await prepareMedia(job, toPeer, items[index], hideCaption);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(PARALLEL_FILES, items.length) }, worker),
+  );
+
+  if (job.cancel) {
+    throw new Error('CANCELLED');
   }
 
   await call(job, new GramJs.messages.SendMultiMedia({
@@ -1016,4 +1032,18 @@ async function run(job: Job, params: StartMediaTransferParams) {
   } finally {
     job.note = undefined;
   }
+}
+
+/**
+ * Background transfer: the server shows a QR login token and this already logged-in account accepts it
+ * (same as scanning a QR code with the phone). The server then owns its own separate session.
+ */
+export async function acceptServerLoginToken(tokenBase64: string) {
+  const bin = atob(tokenBase64);
+  const token = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) token[i] = bin.charCodeAt(i);
+
+  await clientModule.invokeRequest(new GramJs.auth.AcceptLoginToken({ token }), { shouldThrow: true });
+
+  return true;
 }
