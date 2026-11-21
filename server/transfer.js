@@ -153,8 +153,21 @@ const fatalOf = (err) => FATAL.find((f) => errText(err).includes(f));
 
 /* ------------------------------------------------------------------ transfer engine */
 
+function cleanOldTemp() {
+  try {
+    const now = Date.now();
+    fs.readdirSync(TMP_DIR).forEach((f) => {
+      if (!/^tt-[a-z0-9]+-\d+(\.part)?$/.test(f)) return;
+      const fp = path.join(TMP_DIR, f);
+      try { if (now - fs.statSync(fp).mtimeMs > 2 * 3600 * 1000) fs.unlinkSync(fp); } catch (e) { /* ignore */ }
+    });
+  } catch (e) { /* ignore */ }
+}
+
 function createEngine(getClient, onSessionDead) {
   onSessionDeadHandler = onSessionDead;
+  cleanOldTemp(); // leftovers of a crashed / restarted server would slowly fill the disk
+  setInterval(cleanOldTemp, 3600 * 1000).unref();
   const call = (job, request) => withRetry(job, async () => (await getClient(job.accountId)).invoke(request));
 
   async function collect(job, fromPeer) {
@@ -222,6 +235,16 @@ function createEngine(getClient, onSessionDead) {
   }
 
   /* album WITHOUT re-upload: points at files that already exist on Telegram */
+  async function sendAlbumByReferenceFresh(job, toPeer, items, hideCaption) {
+    try {
+      await sendAlbumByReference(job, toPeer, items, hideCaption);
+    } catch (err) {
+      if (!/FILE_REFERENCE|FILEREF/i.test(errText(err))) throw err;
+      for (const item of items) await refetchItem(job, item); // old references expire after a few hours
+      await sendAlbumByReference(job, toPeer, items, hideCaption);
+    }
+  }
+
   async function sendAlbumByReference(job, toPeer, items, hideCaption) {
     const multiMedia = items.map((item) => {
       const media = item.m.media;
@@ -269,9 +292,39 @@ function createEngine(getClient, onSessionDead) {
   const freeMb = () => {
     try { const f = fs.statfsSync(TMP_DIR); return `${Math.round((f.bavail * f.bsize) / 1048576)} MB free`; } catch (e) { return 'free space unknown'; }
   };
-  const dropCache = (item) => {
+  const freeBytes = () => {
+    try { const f = fs.statfsSync(TMP_DIR); return f.bavail * f.bsize; } catch (e) { return Infinity; }
+  };
+  const mediaBytes = (m) => {
+    try { const d = m.media && m.media.document; return d && d.size ? Number(d.size.toString()) : 0; } catch (e) { return 0; }
+  };
+  // the downloaded file is not needed once Telegram holds the uploaded copy
+  const dropFile = (item) => {
     if (item.cachePath) { fs.unlink(item.cachePath, () => {}); item.cachePath = undefined; }
   };
+  const dropCache = (item) => { dropFile(item); item.prepared = undefined; };
+
+  async function topId(job, toPeer) {
+    try {
+      const res = await call(job, new Api.messages.GetHistory({
+        peer: toPeer, offsetId: 0, offsetDate: 0, addOffset: 0, limit: 1, maxId: 0, minId: 0, hash: bigInt.zero,
+      }));
+      const raw = (res && res.messages) || [];
+      return raw.length ? Math.max(...raw.map((x) => x.id)) : 0;
+    } catch (e) { return null; }
+  }
+
+  /* did an album that raised an error (timeout / parse failure) reach the target anyway? Then do NOT send it again. */
+  async function landed(job, toPeer, before, n) {
+    if (before === null) return false;
+    try {
+      const res = await call(job, new Api.messages.GetHistory({
+        peer: toPeer, offsetId: 0, offsetDate: 0, addOffset: 0, limit: n + 5, maxId: 0, minId: 0, hash: bigInt.zero,
+      }));
+      const fresh = ((res && res.messages) || []).filter((x) => x.id > before && x.out && x.media);
+      return fresh.length >= n;
+    } catch (e) { return false; }
+  }
 
   /* fresh copy of the message (new file reference) - what Session-Login does with _refetch before a retry */
   async function refetchItem(job, item) {
@@ -295,6 +348,10 @@ function createEngine(getClient, onSessionDead) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (attempt > 1) { await sleep(2000 * attempt); await refetchItem(job, item); }
       try {
+        const need = mediaBytes(item.m);
+        if (need && freeBytes() < need + 100 * 1048576) {
+          throw new Error(`Not enough disk space: file needs ${Math.ceil(need / 1048576)} MB, ${freeMb()}`);
+        }
         try { fs.unlinkSync(part); } catch (e) { /* no partial file */ }
         await withRetry(job, () => stallGuard(job, 'download', async (beat) => {
           await client.downloadMedia(item.m, { outputFile: part, progressCallback: beat });
@@ -316,6 +373,7 @@ function createEngine(getClient, onSessionDead) {
   }
 
   async function prepareMedia(job, toPeer, item, hideCaption) {
+    if (item.prepared) return item.prepared; // already uploaded in an earlier try of this album
     const client = await getClient(job.accountId);
     const { m, kind } = item;
     const name = fileNameOf(m, kind);
@@ -359,7 +417,10 @@ function createEngine(getClient, onSessionDead) {
         media = new Api.InputMediaDocument({ id: new Api.InputDocument({ id: d.id, accessHash: d.accessHash, fileReference: d.fileReference }) });
       } else throw new Error('Upload failed: Telegram returned no media');
 
-      return { media, caption: hideCaption ? '' : (m.message || ''), entities: hideCaption ? undefined : m.entities };
+      const result = { media, caption: hideCaption ? '' : (m.message || ''), entities: hideCaption ? undefined : m.entities };
+      item.prepared = result;
+      dropFile(item);
+      return result;
     }
   }
 
@@ -383,14 +444,22 @@ function createEngine(getClient, onSessionDead) {
   async function sendAlbumByDownload(job, toPeer, items, hideCaption) {
     const prepared = new Array(items.length);
     let next = 0;
+    let firstError;
     const worker = async () => {
-      while (next < items.length && !job.cancel) {
+      while (next < items.length && !job.cancel && !firstError) {
         const index = next++;
-        prepared[index] = await prepareMedia(job, toPeer, items[index], hideCaption);
+        try {
+          prepared[index] = await prepareMedia(job, toPeer, items[index], hideCaption);
+        } catch (e) {
+          if (!firstError) firstError = e;
+          return;
+        }
       }
     };
+    // wait for ALL workers: a failed album must not leave a worker still downloading the same file in the background
     await Promise.all(Array.from({ length: Math.min(PARALLEL_FILES, items.length) }, worker));
     if (job.cancel) throw new Error('CANCELLED');
+    if (firstError) throw firstError;
     await call(job, new Api.messages.SendMultiMedia({
       peer: toPeer,
       multiMedia: prepared.map((p) => new Api.InputSingleMedia({
@@ -408,6 +477,7 @@ function createEngine(getClient, onSessionDead) {
       if (fatal) throw new Error(fatal);
     };
     const attempt = async (list) => {
+      const before = await topId(job, toPeer);
       try {
         await sendAlbumByDownload(job, toPeer, list, hideCaption);
         markSent(list);
@@ -415,6 +485,12 @@ function createEngine(getClient, onSessionDead) {
         return;
       } catch (err) {
         bail(err);
+        if (!floodSeconds(err) && await landed(job, toPeer, before, list.length)) {
+          console.error(`[transfer] album raised "${errText(err)}" but is already in the target - not sending again`);
+          markSent(list);
+          return;
+        }
+        if (/FILE_REFERENCE|MEDIA_EMPTY|MEDIA_INVALID/i.test(errText(err))) list.forEach((i) => { i.prepared = undefined; });
         console.error(`[transfer] album of ${list.length} failed: ${errText(err)}`);
         if (list.length >= 4) {
           const mid = list.length >> 1;
@@ -447,7 +523,7 @@ function createEngine(getClient, onSessionDead) {
     } = p;
     try {
       job.fromChat = fromChat;
-      const useDownload = Boolean(p.download || p.fromProtected);
+      let useDownload = Boolean(p.download || p.fromProtected);
       job.download = useDownload;
       job.copying = useDownload;
 
@@ -529,13 +605,17 @@ function createEngine(getClient, onSessionDead) {
         }
 
         try {
-          if (unit.album) await sendAlbumByReference(job, toPeer, unit.items, hideCaption);
+          if (unit.album) await sendAlbumByReferenceFresh(job, toPeer, unit.items, hideCaption);
           else await forwardMessages(job, fromPeer, toPeer, unit.items, hideCaption);
           markSent(unit.items);
         } catch (err) {
           if (job.cancel) break;
           const fatal = fatalOf(err);
           if (fatal) throw new Error(fatal);
+          if (/RESTRICTED|NOFORWARDS|NO_FORWARDS|PROTECTED/i.test(errText(err))) {
+            // protected source: stop trying references / forwards, go straight to download + upload from now on
+            useDownload = true; job.download = true; job.copying = true;
+          }
           let recovered = false;
           if (unit.album) {
             await sendAlbumResilient(job, toPeer, unit.items, hideCaption, markSent, sendOneByDownload);
@@ -573,7 +653,10 @@ function createEngine(getClient, onSessionDead) {
         startedAt: Date.now(),
       };
       jobs.set(id, job);
-      if (jobs.size > 30) for (const k of [...jobs.keys()].slice(0, 10)) jobs.delete(k);
+      if (jobs.size > 30) {
+        const done = [...jobs.entries()].filter(([, j]) => ['done', 'error', 'cancelled'].includes(j.status)).slice(0, 10);
+        done.forEach(([k]) => jobs.delete(k));
+      }
       void run(job, p);
       return id;
     },
