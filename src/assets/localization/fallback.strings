@@ -1807,6 +1807,8 @@
 "FoldersAllChatsDesc" = "All unarchived chats";
 "RemoveSymbol" = "Delete emoji";
 "FocusMessage" = "Focus message";
+"ViewPhotoInChat" = "View photo";
+"ViewVideoInChat" = "View video";
 "ShowMoreChats_one" = "Show 1 more chat";
 "ShowMoreChats_other" = "Show {count} more chats";
 "ShowMoreVoters_one" = "Show 1 more voter";
