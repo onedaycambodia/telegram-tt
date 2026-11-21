@@ -142,13 +142,12 @@ async function ensureLinked(accountId: string) {
   if (ping.linked) return;
   if (!ping.hasApi) throw new Error('Set API_ID and API_HASH on the server (Railway variables)');
 
-  setState({ setupNote: 'Linking this account to the server (one time)...' });
+  setState({ setupNote: 'Connecting account…' });
   await serverFetch('/transfer/login/qr/start', { method: 'POST', body: JSON.stringify({ accountId }) });
 
   const startedAt = Date.now();
   let lastToken = '';
   let acceptError = '';
-  let accepted = 0;
   while (Date.now() - startedAt < 120000) {
     if (linkAborted) throw new Error('LINK_CANCELLED');
     const st = await serverFetch(`/transfer/login/qr/state?accountId=${accountId}`);
@@ -156,10 +155,7 @@ async function ensureLinked(accountId: string) {
     if (st.status === 'error') throw new Error(st.error || 'Linking failed');
     if (st.status === 'none') throw new Error('Server lost the linking state (it restarted?) - try again');
 
-    setState({
-      setupNote: `Linking this account to the server... (server: ${st.status}, QR: ${st.token ? 'ready' : 'not yet'}`
-        + `, accepted: ${accepted}${acceptError ? `, last error: ${acceptError}` : ''})`,
-    });
+    setState({ setupNote: acceptError ? `Connecting account… (${acceptError})` : 'Connecting account…' });
 
     if (st.status === 'password') {
       // eslint-disable-next-line no-alert
@@ -180,7 +176,6 @@ async function ensureLinked(accountId: string) {
           new Promise((_, reject) => { window.setTimeout(() => reject(new Error('accept timed out')), 20000); }),
         ]);
         if (!result || !result.ok) throw new Error(result?.error || 'no response from worker');
-        accepted++;
         acceptError = '';
       } catch (e: any) {
         // an expired token is replaced by a fresh one on the next poll - the reason is shown in the note
