@@ -4,6 +4,9 @@
  * Same behaviour as src/api/gramjs/methods/mediaTransfer.ts, but it runs here on Railway,
  * so it keeps going when the phone leaves Safari / locks the screen.
  */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const bigInt = require('big-integer');
 const { Api } = require('telegram');
 const { generateRandomBigInt } = require('telegram/Helpers');
@@ -14,7 +17,8 @@ const ALBUM_MAX = 6;
 const FORWARD_BATCH = 100;
 const PAUSE_MS = 400;
 const DOWNLOAD_PAUSE_MS = 500;
-const PARALLEL_FILES = 4;
+const PARALLEL_FILES = 2; // files are stored on disk while copying - keep this low for big videos
+const TMP_DIR = process.env.TMP_DIR || os.tmpdir();
 const UPLOAD_WORKERS = 4;
 const FLOOD_TRIES = 20;
 const FLOOD_MAX_S = 3700;
@@ -231,38 +235,50 @@ function createEngine(getClient) {
   async function prepareMedia(job, toPeer, item, hideCaption) {
     const client = await getClient(job.accountId);
     const { m, kind } = item;
-
-    const data = await withRetry(job, () => stallGuard(job, 'download',
-      (beat) => client.downloadMedia(m, { progressCallback: beat })));
-    if (!data || !Buffer.isBuffer(data)) throw new Error('Could not download the file');
-
     const name = fileNameOf(m, kind);
-    const inputFile = await withRetry(job, () => stallGuard(job, 'upload',
-      (beat) => client.uploadFile({
-        file: new CustomFile(name, data.length, '', data), workers: UPLOAD_WORKERS, onProgress: beat,
-      })));
 
-    let uploaded;
-    if (kind === 'photo') {
-      uploaded = new Api.InputMediaUploadedPhoto({ file: inputFile });
-    } else {
-      const doc = m.media.document;
-      const attributes = doc.attributes.filter((a) => !(a instanceof Api.DocumentAttributeFilename));
-      attributes.push(new Api.DocumentAttributeFilename({ fileName: name }));
-      uploaded = new Api.InputMediaUploadedDocument({ file: inputFile, mimeType: doc.mimeType || 'video/mp4', attributes });
+    // Big videos (> 2 GB) cannot be held in memory: GramJS then needs a real file path.
+    // So every file is downloaded to a temp file on disk, uploaded from there, then deleted.
+    const tmpPath = path.join(TMP_DIR, `tt-${job.id}-${m.id}-${Math.random().toString(36).slice(2, 8)}`);
+    try {
+      await withRetry(job, () => stallGuard(job, 'download', async (beat) => {
+        try { fs.unlinkSync(tmpPath); } catch (e) { /* no partial file */ }
+        await client.downloadMedia(m, { outputFile: tmpPath, progressCallback: beat });
+      }));
+
+      let size = 0;
+      try { size = fs.statSync(tmpPath).size; } catch (e) { size = 0; }
+      if (!size) throw new Error('Could not download the file');
+
+      const inputFile = await withRetry(job, () => stallGuard(job, 'upload',
+        (beat) => client.uploadFile({
+          file: new CustomFile(name, size, tmpPath), workers: UPLOAD_WORKERS, onProgress: beat,
+        })));
+
+      let uploaded;
+      if (kind === 'photo') {
+        uploaded = new Api.InputMediaUploadedPhoto({ file: inputFile });
+      } else {
+        const doc = m.media.document;
+        const attributes = doc.attributes.filter((a) => !(a instanceof Api.DocumentAttributeFilename));
+        attributes.push(new Api.DocumentAttributeFilename({ fileName: name }));
+        uploaded = new Api.InputMediaUploadedDocument({ file: inputFile, mimeType: doc.mimeType || 'video/mp4', attributes });
+      }
+
+      const stored = await call(job, new Api.messages.UploadMedia({ peer: toPeer, media: uploaded }));
+      let media;
+      if (stored && stored.photo instanceof Api.Photo) {
+        const p = stored.photo;
+        media = new Api.InputMediaPhoto({ id: new Api.InputPhoto({ id: p.id, accessHash: p.accessHash, fileReference: p.fileReference }) });
+      } else if (stored && stored.document instanceof Api.Document) {
+        const d = stored.document;
+        media = new Api.InputMediaDocument({ id: new Api.InputDocument({ id: d.id, accessHash: d.accessHash, fileReference: d.fileReference }) });
+      } else throw new Error('Upload failed: Telegram returned no media');
+
+      return { media, caption: hideCaption ? '' : (m.message || ''), entities: hideCaption ? undefined : m.entities };
+    } finally {
+      fs.unlink(tmpPath, () => {});
     }
-
-    const stored = await call(job, new Api.messages.UploadMedia({ peer: toPeer, media: uploaded }));
-    let media;
-    if (stored && stored.photo instanceof Api.Photo) {
-      const p = stored.photo;
-      media = new Api.InputMediaPhoto({ id: new Api.InputPhoto({ id: p.id, accessHash: p.accessHash, fileReference: p.fileReference }) });
-    } else if (stored && stored.document instanceof Api.Document) {
-      const d = stored.document;
-      media = new Api.InputMediaDocument({ id: new Api.InputDocument({ id: d.id, accessHash: d.accessHash, fileReference: d.fileReference }) });
-    } else throw new Error('Upload failed: Telegram returned no media');
-
-    return { media, caption: hideCaption ? '' : (m.message || ''), entities: hideCaption ? undefined : m.entities };
   }
 
   async function sendSingleByDownload(job, toPeer, item, hideCaption) {
