@@ -66,7 +66,20 @@ async function getClient(accountId) {
   try { return await promise; } finally { connecting.delete(id); }
 }
 
-const engine = transfer.createEngine(getClient);
+/** Called the moment a job finds this account's session dead (terminated/logged out elsewhere).
+ * Drops the stored session and the cached client, so the next /transfer/ping reports linked:false
+ * and the already-logged-in browser can relink the account with a fresh QR token automatically. */
+function forgetSession(accountId) {
+  const id = String(accountId);
+  if (!sessions[id]) return;
+  delete sessions[id];
+  saveSessions();
+  const c = clients.get(id);
+  clients.delete(id);
+  if (c) { try { c.disconnect(); } catch (e) { /* already gone */ } }
+}
+
+const engine = transfer.createEngine(getClient, forgetSession);
 
 /* ------------------------------------------------------------------ QR link (one per account) */
 
@@ -194,7 +207,14 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     if (!body.accountId || !body.fromChat || !body.toChat) return json(res, 400, { error: 'Missing account or chats' });
     if (!sessions[String(body.accountId)]) return json(res, 400, { error: 'This account is not linked to the server yet' });
-    await getClient(body.accountId);
+    try {
+      await getClient(body.accountId);
+    } catch (e) {
+      // The very first connect after a deploy/restart is where a terminated session usually surfaces,
+      // before any job exists - forget it here too so /transfer/ping stops reporting linked:true.
+      if (transfer.isSessionDead(e)) forgetSession(body.accountId);
+      return json(res, 400, { error: errText(e) });
+    }
     const running = transfer.listJobs().find((j) => j.meta.accountId === String(body.accountId)
       && (j.status === 'preparing' || j.status === 'running'));
     if (running) return json(res, 409, { error: 'A transfer is already running for this account', id: running.id });

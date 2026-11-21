@@ -28,13 +28,24 @@ const STALL_MS = 10 * 60 * 1000;
 const FATAL = [
   'CHAT_WRITE_FORBIDDEN', 'CHAT_ADMIN_REQUIRED', 'USER_BANNED_IN_CHANNEL', 'PEER_ID_INVALID',
   'CHANNEL_PRIVATE', 'CHAT_SEND_PHOTOS_FORBIDDEN', 'CHAT_SEND_MEDIA_FORBIDDEN',
+  // The account's session itself is dead (terminated from Devices, or Telegram logged it out):
+  // nothing else will work either, so stop immediately instead of retrying item by item.
+  'AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'USER_DEACTIVATED', 'AUTH_KEY_INVALID',
 ];
+
+// Same list, used to recognize a dead session and to tell the client it can relink automatically.
+const TERMINATED_SESSION_ERRORS = ['AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'USER_DEACTIVATED', 'AUTH_KEY_INVALID'];
 
 const jobs = new Map();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const albumSize = () => ALBUM_MIN + Math.floor(Math.random() * (ALBUM_MAX - ALBUM_MIN + 1));
 const errText = (e) => String((e && (e.errorMessage || e.message)) || e);
+const isSessionDead = (err) => TERMINATED_SESSION_ERRORS.some((s) => errText(err).includes(s));
+
+// Set by createEngine(); called once per job the moment its session is found dead, so the server
+// can drop the stored session for that account and let the client relink it automatically.
+let onSessionDeadHandler;
 
 /* ------------------------------------------------------------------ peers */
 
@@ -111,6 +122,12 @@ async function withRetry(job, fn) {
       return await fn();
     } catch (err) {
       if (job.cancel) throw new Error('CANCELLED');
+      if (isSessionDead(err) && !job.sessionDeadReported) {
+        job.sessionDeadReported = true;
+        if (onSessionDeadHandler) {
+          try { await onSessionDeadHandler(job.accountId); } catch (e2) { /* best effort */ }
+        }
+      }
       const seconds = floodSeconds(err);
       if (seconds && floods < FLOOD_TRIES) { floods++; await waitFlood(job, seconds); continue; }
       if (!seconds && isTransient(err) && nets < NET_TRIES) { nets++; await sleep(Math.min(5000 * nets, 30000)); continue; }
@@ -136,7 +153,8 @@ const fatalOf = (err) => FATAL.find((f) => errText(err).includes(f));
 
 /* ------------------------------------------------------------------ transfer engine */
 
-function createEngine(getClient) {
+function createEngine(getClient, onSessionDead) {
+  onSessionDeadHandler = onSessionDead;
   const call = (job, request) => withRetry(job, async () => (await getClient(job.accountId)).invoke(request));
 
   async function collect(job, fromPeer) {
@@ -520,6 +538,7 @@ function snapshot(job, since = 0) {
 
 module.exports = {
   createEngine,
+  isSessionDead,
   getJob: (id) => jobs.get(id),
   listJobs: () => [...jobs.values()].map((j) => ({ id: j.id, meta: j.meta, status: j.status, startedAt: j.startedAt })),
   snapshot,
