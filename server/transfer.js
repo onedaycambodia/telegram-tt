@@ -337,6 +337,24 @@ function createEngine(getClient, onSessionDead) {
     job.collected = keep;
   }
 
+  /* GramJS can resolve downloadMedia() BEFORE its write stream has flushed the file to disk, so a stat() right
+   * after it sees a missing / 0-byte file although the download is fine. Wait until the file is complete
+   * (size reached the expected size, or - for photos - stopped growing). */
+  async function settleFile(job, part, expected) {
+    let last = -1;
+    let stable = 0;
+    let lastGrowth = Date.now();
+    for (let i = 0; i < 2400 && !job.cancel; i++) { // up to ~10 min while the file keeps growing
+      const size = fileSize(part);
+      if (size !== last) { last = size; stable = 0; lastGrowth = Date.now(); } else stable++;
+      if (size > 0 && expected && size >= expected) return size;
+      if (size > 0 && !expected && stable >= 3) return size;
+      if (Date.now() - lastGrowth > (size > 0 ? 20000 : 8000)) return size; // nothing is being written any more
+      await sleep(250);
+    }
+    return fileSize(part);
+  }
+
   /* Download to disk: writes to <file>.part and renames when complete (like Session-Login's ensure_cached).
    * A finished file is kept in item.cachePath, so a retried / split album does NOT download it again. */
   async function downloadToDisk(job, item) {
@@ -353,15 +371,27 @@ function createEngine(getClient, onSessionDead) {
           throw new Error(`Not enough disk space: file needs ${Math.ceil(need / 1048576)} MB, ${freeMb()}`);
         }
         try { fs.unlinkSync(part); } catch (e) { /* no partial file */ }
+        let returned;
         await withRetry(job, () => stallGuard(job, 'download', async (beat) => {
-          await client.downloadMedia(item.m, { outputFile: part, progressCallback: beat });
+          returned = await client.downloadMedia(item.m, { outputFile: part, progressCallback: beat });
         }));
-        if (fileSize(part)) {
+        let size = await settleFile(job, part, need);
+        if (!size && (!need || need < 1.5 * 1024 * 1024 * 1024)) {
+          // GramJS wrote nothing to the file: download into memory instead and write it ourselves
+          console.error(`[transfer] message ${item.m.id}: file write gave 0 bytes (returned ${typeof returned}) - retrying in memory`);
+          const buf = await withRetry(job, () => stallGuard(job, 'download',
+            (beat) => client.downloadMedia(item.m, { progressCallback: beat })));
+          if (buf && buf.length) { fs.writeFileSync(part, buf); size = fileSize(part); }
+        }
+        if (size && need && size < need) {
+          lastErr = new Error(`download incomplete: ${size} of ${need} bytes`);
+        } else if (size) {
           fs.renameSync(part, base);
           item.cachePath = base;
           return base;
+        } else {
+          lastErr = new Error(`download finished but wrote 0 bytes (returned ${typeof returned}, ${part}, ${freeMb()})`);
         }
-        lastErr = new Error(`download finished but wrote 0 bytes (${part}, ${freeMb()})`);
       } catch (e) {
         if (job.cancel || errText(e).includes('CANCELLED') || fatalOf(e)) throw e;
         lastErr = e;
@@ -476,11 +506,14 @@ function createEngine(getClient, onSessionDead) {
       const fatal = fatalOf(err);
       if (fatal) throw new Error(fatal);
     };
+    // the red "Album failed" line is only a warning: it disappears as soon as the next album goes through
+    const clearWarn = () => { if (job.errorIsWarning) { job.error = undefined; job.errorIsWarning = false; } };
     const attempt = async (list) => {
       const before = await topId(job, toPeer);
       try {
         await sendAlbumByDownload(job, toPeer, list, hideCaption);
         markSent(list);
+        clearWarn();
         await sleep(DOWNLOAD_PAUSE_MS);
         return;
       } catch (err) {
@@ -502,10 +535,12 @@ function createEngine(getClient, onSessionDead) {
         try {
           await sendAlbumByDownload(job, toPeer, list, hideCaption);
           markSent(list);
+          clearWarn();
           return;
         } catch (err2) {
           bail(err2);
           job.error = `Album failed (${errText(err2).slice(0, 120)}) - sent as single files`;
+          job.errorIsWarning = true;
         }
         for (const item of list) await sendOne(item);
       }
@@ -626,6 +661,7 @@ function createEngine(getClient, onSessionDead) {
         await sleep(PAUSE_MS);
       }
 
+      if (job.errorIsWarning && !job.failed) { job.error = undefined; job.errorIsWarning = false; }
       job.status = job.cancel ? 'cancelled' : 'done';
     } catch (err) {
       if (job.cancel || errText(err).includes('CANCELLED')) job.status = 'cancelled';
