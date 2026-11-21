@@ -550,7 +550,8 @@ const Message = ({
     handleContextMenuHide,
   } = useContextMenuHandlers(
     ref,
-    (isTouchScreen && isInSelectMode) || isAccountFrozen,
+    // Frozen accounts can still open the menu for local actions (select, download, copy link)
+    isTouchScreen && isInSelectMode,
     !IS_TAURI,
     IS_ANDROID,
     getIsMessageListReady,
@@ -671,7 +672,7 @@ const Message = ({
     || Boolean(isShowingSummary && summary?.text);
 
   const selectMessage = useLastCallback((e?: React.MouseEvent<HTMLDivElement, MouseEvent>, groupedId?: string) => {
-    if (isAccountFrozen || message.isEphemeral) return;
+    if (message.isEphemeral) return;
     // Select only the tapped/long-pressed album item instead of the whole album
     // Tapping/long-pressing an item inside an album selects only that item;
     // tapping the message's own select circle (outside any item) selects the whole album
