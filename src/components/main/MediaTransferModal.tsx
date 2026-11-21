@@ -31,31 +31,30 @@ type StateProps = {
 };
 
 type Options = {
-  video: boolean; photo: boolean; text: boolean; hide: boolean; albums: boolean; direct: boolean;
+  video: boolean; photo: boolean; text: boolean; hide: boolean; albums: boolean;
 };
 
 const OPTS_KEY = 'mt-opts';
 const DEFAULT_OPTS: Options = {
-  video: true, photo: true, text: false, hide: true, albums: true, direct: false,
+  video: true, photo: true, text: false, hide: true, albums: true,
 };
 
-const TILES: [keyof Options, string, boolean][] = [
-  ['video', 'Video', false],
-  ['photo', 'Photo', false],
-  ['text', 'Text Chat', false],
-  ['hide', 'Hide Caption', false],
-  ['albums', 'Send as Albums', false],
-  ['direct', 'Force download + upload (slow - protected chats do it automatically)', true],
+const TILES: [keyof Options, string][] = [
+  ['video', 'Videos'],
+  ['photo', 'Photos'],
+  ['text', 'Text'],
+  ['hide', 'No captions'],
+  ['albums', 'Albums'],
 ];
 
 const SELECTED_TILES = ['hide', 'albums'];
 
-const ROWS: [MediaTransferKind, string][] = [['video', 'Videos'], ['photo', 'Photo'], ['text', 'Text']];
+const ROWS: [MediaTransferKind, string][] = [['video', 'Videos'], ['photo', 'Photos'], ['text', 'Text']];
 
 const STATUS_TEXT = {
-  preparing: 'Collecting messages',
-  running: 'Transferring',
-  done: 'Completed',
+  preparing: 'Collecting',
+  running: 'Sending',
+  done: 'Done',
   cancelled: 'Stopped',
   error: 'Failed',
 };
@@ -138,7 +137,7 @@ const MediaTransferModal = ({
       types: isSelection
         ? { video: true, photo: true, text: true }
         : { video: opts.video, photo: opts.photo, text: opts.text },
-      download: isSelection ? true : opts.direct,
+      download: isSelection,
       messageIds: isSelection ? messageIds : undefined,
       hideCaption: opts.hide,
       albums: opts.albums,
@@ -150,51 +149,39 @@ const MediaTransferModal = ({
   function renderForm() {
     return (
       <>
-        <div className={styles.head}>
-          <span className={styles.badge}>➦</span>
-          <div>
-            <div className={styles.headTitle}>{isSelection ? 'Send selected' : 'All Media Transfer'}</div>
-            <div className={styles.headSub}>
-              {isSelection ? `${messageIds!.length} selected messages` : 'Entire chat, oldest to newest'}
-            </div>
-          </div>
+        <div className={styles.sub}>
+          {isSelection ? `${messageIds!.length} selected` : 'Whole chat, oldest first'}
         </div>
 
-        <div className={styles.label}>Send with</div>
-        <div className={buildClassName(styles.tile, styles.static, styles.on, styles.wide)}>
-          <b>This account</b>
-          <span className={styles.tileSub}>Copied by this account</span>
-        </div>
-
-        <div className={styles.label}>Include</div>
+        <div className={styles.label}>Options</div>
         <div className={styles.grid}>
-          {TILES.filter(([key]) => !isSelection || SELECTED_TILES.includes(key)).map(([key, label, wide]) => (
+          {TILES.filter(([key]) => !isSelection || SELECTED_TILES.includes(key)).map(([key, label]) => (
             <button
               key={key}
               type="button"
-              className={buildClassName(styles.tile, opts[key] && styles.on, wide && styles.wide)}
+              className={buildClassName(styles.tile, opts[key] && styles.on)}
               onClick={() => toggle(key)}
             >
               <span className={styles.box}><CheckIcon /></span>
-              <span>{label}</span>
+              <span className={styles.tileText}>{label}</span>
             </button>
           ))}
           {!isSelection && (
             <button
               type="button"
-              className={buildClassName(styles.tile, styles.wide, again && styles.on)}
+              className={buildClassName(styles.tile, again && styles.on)}
               onClick={() => setAgain(!again)}
             >
               <span className={styles.box}><CheckIcon /></span>
-              <span>Send everything again (ignore history)</span>
+              <span className={styles.tileText}>Resend all</span>
             </button>
           )}
         </div>
 
-        <div className={styles.label}>Target chat</div>
+        <div className={styles.label}>Send to</div>
         <input
           className={styles.search}
-          placeholder="Search target chat..."
+          placeholder="Search chat"
           value={query}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.currentTarget.value)}
         />
@@ -227,13 +214,7 @@ const MediaTransferModal = ({
     const running = s.status === 'preparing' || s.status === 'running';
     return (
       <>
-        <div className={styles.head}>
-          <span className={styles.badge}>➦</span>
-          <div>
-            <div className={styles.headTitle}>{job.selected ? 'Send selected' : 'All Media Transfer'}</div>
-            <div className={styles.headSub}>{job.fromTitle} → {job.toTitle}{job.albums ? ' · Albums' : ''}</div>
-          </div>
-        </div>
+        <div className={styles.sub}>{job.fromTitle} → {job.toTitle}</div>
 
         <div className={styles.progressTop}>
           <b>{STATUS_TEXT[s.status]}{s.status === 'preparing' ? ` (${s.collected})` : ''}</b>
@@ -246,24 +227,19 @@ const MediaTransferModal = ({
           return (
             <div key={k} className={styles.progressRow}>
               <div className={styles.progressTop}>
-                <b>{label}</b>
-                <span>{done} / {total} Messages</span>
+                <span>{label}</span>
+                <span>{done} / {total}</span>
               </div>
               <div className={styles.bar}><span style={`width: ${total ? (done / total) * 100 : 0}%`} /></div>
             </div>
           );
         })}
 
-        {s.failed > 0 && <div className={styles.headSub}>{s.failed} failed</div>}
+        {s.failed > 0 && <div className={styles.note}>{s.failed} failed</div>}
         {s.error && <div className={styles.error}>{s.error}</div>}
-        {setupNote && <div className={styles.headSub}>{setupNote}</div>}
-        {s.note && <div className={styles.headSub}>{s.note}</div>}
-        {s.copying && <div className={styles.headSub}>Restricted chat: downloading and re-uploading (slower)</div>}
-        {running && (
-          <div className={styles.headSub}>
-            {job.server ? 'Runs on the server - you can close Safari.' : 'Keeps running if you close this window.'}
-          </div>
-        )}
+        {setupNote && <div className={styles.note}>{setupNote}</div>}
+        {s.note && <div className={styles.note}>{s.note}</div>}
+        {running && <div className={styles.note}>Runs in the background</div>}
 
         <div className={styles.actions}>
           {running ? (
@@ -284,7 +260,7 @@ const MediaTransferModal = ({
       isOpen={isOpen}
       onClose={closeMediaTransfer}
       className={styles.root}
-      title={(job ? Boolean(job.selected) : isSelection) ? 'Send selected' : 'All Media Transfer'}
+      title={(job ? Boolean(job.selected) : isSelection) ? 'Send selected' : 'Media Transfer'}
       hasCloseButton
     >
       {job ? renderProgress() : renderForm()}

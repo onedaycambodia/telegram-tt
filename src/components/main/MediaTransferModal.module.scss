@@ -4,33 +4,8 @@
   }
 }
 
-.head {
-  display: flex;
-  align-items: center;
-  gap: 0.875rem;
-  margin-bottom: 1rem;
-}
-
-.badge {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 3rem;
-  height: 3rem;
-  border-radius: 0.875rem;
-  background: var(--color-primary);
-  color: #fff;
-  font-size: 1.5rem;
-}
-
-.headTitle {
-  font-size: 1.125rem;
-  font-weight: 600;
-  line-height: 1.2;
-}
-
-.headSub {
+.sub {
+  margin-bottom: 0.25rem;
   color: var(--color-text-secondary);
   font-size: 0.875rem;
 }
@@ -54,8 +29,9 @@
   display: flex;
   align-items: center;
   gap: 0.625rem;
-  min-height: 2.75rem;
-  padding: 0.5rem 0.75rem;
+  box-sizing: border-box;
+  height: 2.75rem;
+  padding: 0 0.75rem;
   border: 1.5px solid var(--color-borders);
   border-radius: 0.875rem;
   background: transparent;
@@ -64,20 +40,9 @@
   text-align: start;
   cursor: pointer;
 
-  &.wide {
-    grid-column: 1 / -1;
-  }
-
   &.on {
     border-color: var(--color-primary);
     background: color-mix(in srgb, var(--color-primary) 12%, transparent);
-  }
-
-  &.static {
-    cursor: default;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.125rem;
   }
 }
 
@@ -108,7 +73,15 @@
   }
 }
 
-.tileSub {
+.tileText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note {
+  margin-top: 0.25rem;
   color: var(--color-text-secondary);
   font-size: 0.8125rem;
 }
