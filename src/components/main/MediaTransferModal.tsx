@@ -94,6 +94,17 @@ const MediaTransferModal = ({
     if (currentUserId) void resumeServerJob(currentUserId);
   }, [currentUserId]);
 
+  // close by itself shortly after a successful transfer
+  const finishedStatus = job?.status.status;
+  useEffect(() => {
+    if (!isOpen || finishedStatus !== 'done') return undefined;
+    const closeTimer = window.setTimeout(() => {
+      dismissMediaTransfer();
+      closeMediaTransfer();
+    }, 1200);
+    return () => window.clearTimeout(closeTimer);
+  }, [isOpen, finishedStatus]);
+
   const [opts, setOpts] = useState<Options>(readOpts);
   const [again, setAgain] = useState(false);
   const [query, setQuery] = useState('');
