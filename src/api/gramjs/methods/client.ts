@@ -83,7 +83,7 @@ import { ChatAbortController } from '../ChatAbortController';
 
 
 /** Device name shown in Telegram's "new login" alert and in Settings > Devices */
-const DEVICE_NAME = 'none';
+const DEVICE_NAME = ' ';
 const DEFAULT_PLATFORM = 'Unknown platform';
 const ACCOUNT_REQUEST_TIMEOUT_MS = 10000;
 const TERMINATED_SESSION_ERRORS = new Set(['AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'USER_DEACTIVATED']);
