@@ -232,6 +232,21 @@ function createEngine(getClient) {
     return `${m.id}.${kind === 'photo' ? 'jpg' : 'mp4'}`;
   }
 
+  /* the preview picture of a video - without it Telegram shows a black/empty tile */
+  async function downloadVideoThumb(client, m) {
+    try {
+      const doc = m.media && m.media.document;
+      const thumbs = (doc && doc.thumbs) || [];
+      let index = -1;
+      thumbs.forEach((t, i) => { if (t instanceof Api.PhotoSize || t instanceof Api.PhotoSizeProgressive) index = i; });
+      if (index < 0) return undefined;
+      const data = await client.downloadMedia(m, { thumb: index });
+      return Buffer.isBuffer(data) && data.length ? data : undefined;
+    } catch (e) {
+      return undefined;
+    }
+  }
+
   async function prepareMedia(job, toPeer, item, hideCaption) {
     const client = await getClient(job.accountId);
     const { m, kind } = item;
@@ -262,7 +277,16 @@ function createEngine(getClient) {
         const doc = m.media.document;
         const attributes = doc.attributes.filter((a) => !(a instanceof Api.DocumentAttributeFilename));
         attributes.push(new Api.DocumentAttributeFilename({ fileName: name }));
-        uploaded = new Api.InputMediaUploadedDocument({ file: inputFile, mimeType: doc.mimeType || 'video/mp4', attributes });
+        let thumb;
+        const thumbData = await downloadVideoThumb(client, m);
+        if (thumbData) {
+          try {
+            thumb = await client.uploadFile({ file: new CustomFile('thumb.jpg', thumbData.length, '', thumbData), workers: 1 });
+          } catch (e) { thumb = undefined; }
+        }
+        uploaded = new Api.InputMediaUploadedDocument({
+          file: inputFile, thumb, mimeType: doc.mimeType || 'video/mp4', attributes,
+        });
       }
 
       const stored = await call(job, new Api.messages.UploadMedia({ peer: toPeer, media: uploaded }));
