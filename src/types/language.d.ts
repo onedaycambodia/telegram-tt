@@ -1494,6 +1494,8 @@ export interface LangPair {
   'FoldersAllChatsDesc': undefined;
   'RemoveSymbol': undefined;
   'FocusMessage': undefined;
+  'ViewPhotoInChat': undefined;
+  'ViewVideoInChat': undefined;
   'HiddenSendersNameDescription': undefined;
   'ShowSenderNames': undefined;
   'ShowSendersName': undefined;
