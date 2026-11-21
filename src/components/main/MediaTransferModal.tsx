@@ -12,6 +12,7 @@ import {
   closeMediaTransfer,
   dismissMediaTransfer,
   getMediaTransferState,
+  resumeServerJob,
   startMediaTransfer,
   stopMediaTransfer,
   subscribeMediaTransfer,
@@ -86,9 +87,13 @@ const MediaTransferModal = ({
   chatsById, orderedIds, usersById, currentUserId,
 }: StateProps) => {
   const {
-    isOpen, chatId, job, messageIds,
+    isOpen, chatId, job, messageIds, setupNote,
   } = useTransferState();
   const isSelection = Boolean(messageIds?.length);
+
+  useEffect(() => {
+    if (currentUserId) void resumeServerJob(currentUserId);
+  }, [currentUserId]);
 
   const [opts, setOpts] = useState<Options>(readOpts);
   const [again, setAgain] = useState(false);
@@ -138,6 +143,7 @@ const MediaTransferModal = ({
       hideCaption: opts.hide,
       albums: opts.albums,
       fresh: again,
+      accountId: currentUserId,
     });
   };
 
@@ -250,8 +256,14 @@ const MediaTransferModal = ({
 
         {s.failed > 0 && <div className={styles.headSub}>{s.failed} failed</div>}
         {s.error && <div className={styles.error}>{s.error}</div>}
+        {setupNote && <div className={styles.headSub}>{setupNote}</div>}
+        {s.note && <div className={styles.headSub}>{s.note}</div>}
         {s.copying && <div className={styles.headSub}>Restricted chat: downloading and re-uploading (slower)</div>}
-        {running && <div className={styles.headSub}>Keeps running if you close this window.</div>}
+        {running && (
+          <div className={styles.headSub}>
+            {job.server ? 'Runs on the server - you can close Safari.' : 'Keeps running if you close this window.'}
+          </div>
+        )}
 
         <div className={styles.actions}>
           {running ? (
