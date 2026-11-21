@@ -175,15 +175,16 @@ async function ensureLinked(accountId: string) {
     if (st.token && st.token !== lastToken) {
       lastToken = st.token;
       try {
-        await Promise.race([
+        const result: any = await Promise.race([
           callApi('acceptServerLoginToken', st.token),
           new Promise((_, reject) => { window.setTimeout(() => reject(new Error('accept timed out')), 20000); }),
         ]);
+        if (!result || !result.ok) throw new Error(result?.error || 'no response from worker');
         accepted++;
         acceptError = '';
-      } catch (e) {
+      } catch (e: any) {
         // an expired token is replaced by a fresh one on the next poll - the reason is shown in the note
-        acceptError = e instanceof Error ? e.message : String(e);
+        acceptError = e?.message || e?.errorMessage || (typeof e === 'string' ? e : JSON.stringify(e));
       }
     }
     await sleep(1200);
