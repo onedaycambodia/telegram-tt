@@ -41,6 +41,7 @@ let state: MediaTransferState = { isOpen: false };
 const listeners = new Set<() => void>();
 let timer: number | undefined;
 let serverCursor = 0;
+let linkAborted = false;
 
 function setState(next: Partial<MediaTransferState>) {
   state = { ...state, ...next };
@@ -146,10 +147,19 @@ async function ensureLinked(accountId: string) {
 
   const startedAt = Date.now();
   let lastToken = '';
-  while (Date.now() - startedAt < 150000) {
+  let acceptError = '';
+  let accepted = 0;
+  while (Date.now() - startedAt < 120000) {
+    if (linkAborted) throw new Error('LINK_CANCELLED');
     const st = await serverFetch(`/transfer/login/qr/state?accountId=${accountId}`);
     if (st.status === 'done') { setState({ setupNote: undefined }); return; }
     if (st.status === 'error') throw new Error(st.error || 'Linking failed');
+    if (st.status === 'none') throw new Error('Server lost the linking state (it restarted?) - try again');
+
+    setState({
+      setupNote: `Linking this account to the server... (server: ${st.status}, QR: ${st.token ? 'ready' : 'not yet'}`
+        + `, accepted: ${accepted}${acceptError ? `, last error: ${acceptError}` : ''})`,
+    });
 
     if (st.status === 'password') {
       // eslint-disable-next-line no-alert
@@ -165,14 +175,20 @@ async function ensureLinked(accountId: string) {
     if (st.token && st.token !== lastToken) {
       lastToken = st.token;
       try {
-        await callApi('acceptServerLoginToken', st.token);
+        await Promise.race([
+          callApi('acceptServerLoginToken', st.token),
+          new Promise((_, reject) => { window.setTimeout(() => reject(new Error('accept timed out')), 20000); }),
+        ]);
+        accepted++;
+        acceptError = '';
       } catch (e) {
-        // an expired token is replaced by a fresh one on the next poll
+        // an expired token is replaced by a fresh one on the next poll - the reason is shown in the note
+        acceptError = e instanceof Error ? e.message : String(e);
       }
     }
     await sleep(1200);
   }
-  throw new Error('Linking timed out - try again');
+  throw new Error(`Linking timed out - ${acceptError ? `Telegram said: ${acceptError}` : 'the account never accepted the QR token'}`);
 }
 
 function pollServer() {
@@ -285,6 +301,7 @@ export async function startMediaTransfer(params: {
     },
   });
   const skipIds = fresh || messageIds?.length ? [] : readLedger(fromChat.id, toChat.id);
+  linkAborted = false;
 
   // 1) background server (keeps running when Safari is closed) - 2) otherwise inside this browser, as before
   if (accountId) {
@@ -319,10 +336,13 @@ export async function startMediaTransfer(params: {
     } catch (e) {
       setState({ setupNote: undefined });
       if (!(e instanceof ServerUnavailable)) {
+        const cancelled = e instanceof Error && e.message === 'LINK_CANCELLED';
         setState({
           job: {
             id, fromId: fromChat.id, toId: toChat.id, fromTitle, toTitle, albums, selected: messageIds?.length,
-            status: { ...status, status: 'error', error: e instanceof Error ? e.message : String(e) },
+            status: cancelled
+              ? { ...status, status: 'cancelled' }
+              : { ...status, status: 'error', error: e instanceof Error ? e.message : String(e) },
           },
         });
         return;
@@ -349,6 +369,8 @@ export function stopMediaTransfer() {
   if (!job) return;
   if (job.server) {
     void serverFetch(`/transfer/cancel/${job.id}`, { method: 'POST' }, false).catch(() => undefined);
+  } else if (state.setupNote) {
+    linkAborted = true; // still linking the account - stop waiting
   } else {
     void callApi('cancelMediaTransfer', job.id);
   }
