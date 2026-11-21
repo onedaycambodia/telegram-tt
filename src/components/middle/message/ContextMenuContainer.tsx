@@ -34,6 +34,7 @@ import {
   getIsDownloading,
   getMessageAudio,
   getMessageCustomEmojis,
+  getMessagePhoto,
   getMessageVideo,
   getUniqueStickerSetsInfo,
   getUserFullName,
@@ -85,6 +86,7 @@ import buildClassName from '../../../util/buildClassName';
 import { copyTextToClipboard } from '../../../util/clipboard';
 import { isUserId } from '../../../util/entities/ids';
 import { getTranslationCacheKey, parseTranslationCacheKey } from '../../../util/keys/translationKey';
+import { openMediaTransfer } from '../../../util/mediaTransferStore';
 import { MEMO_EMPTY_ARRAY } from '../../../util/memo';
 import { getSelectionAsFormattedText } from './helpers/getSelectionAsFormattedText';
 import { getSelectionAsRichQuote } from './helpers/getSelectionAsRichQuote';
@@ -139,6 +141,8 @@ type StateProps = {
   canEdit?: boolean;
   canAppendTodoList?: boolean;
   canForward?: boolean;
+  /** forwarding is blocked (protected chat) but the media can be copied by the transfer tool */
+  canTransfer?: boolean;
   canFaveSticker?: boolean;
   canUnfaveSticker?: boolean;
   canCopy?: boolean;
@@ -219,6 +223,7 @@ const ContextMenuContainer = ({
   isPrivate,
   isCurrentUserPremium,
   canForward,
+  canTransfer,
   canBuyPremium,
   canFaveSticker,
   canUnfaveSticker,
@@ -605,12 +610,13 @@ const ContextMenuContainer = ({
 
   const handleForward = useLastCallback(() => {
     closeMenu();
-    if (album?.messages) {
-      const messageIds = album.messages.map(({ id }) => id);
-      openForwardMenu({ fromChatId: message.chatId, messageIds });
-    } else {
-      openForwardMenu({ fromChatId: message.chatId, messageIds: [message.id] });
+    const messageIds = album?.messages ? album.messages.map(({ id }) => id) : [message.id];
+    if (!canForward && canTransfer) {
+      // protected chat: copy through the transfer tool instead of the normal forward
+      openMediaTransfer(message.chatId, messageIds);
+      return;
     }
+    openForwardMenu({ fromChatId: message.chatId, messageIds });
   });
 
   const handleFaveSticker = useLastCallback(() => {
@@ -846,7 +852,7 @@ const ContextMenuContainer = ({
         canUnpin={canUnpin}
         canEdit={canEdit}
         canAppendTodoList={canAppendTodoList}
-        canForward={canForward}
+        canForward={Boolean(canForward || canTransfer)}
         canFaveSticker={canFaveSticker}
         canUnfaveSticker={canUnfaveSticker}
         canCopy={canCopy}
@@ -1080,13 +1086,15 @@ export default memo(withGlobal<OwnProps>(
       canEdit: !message.isEphemeral && !isPinned && canEdit,
       canAppendTodoList: !message.isEphemeral && canAppendTodoList,
       canForward: !isScheduled && canForward,
+      canTransfer: !isScheduled && !canForward
+        && Boolean(canDownload && (getMessagePhoto(message) || getMessageVideo(message))),
       canFaveSticker: !message.isEphemeral && !isScheduled && canFaveSticker,
       canUnfaveSticker: !message.isEphemeral && !isScheduled && canUnfaveSticker,
       canCopy: (canCopyNumber || (!isProtected && canCopy)),
       isMessageProtected: isProtected,
       canCopyLink: !message.isEphemeral && !isScheduled && canCopyLink,
       canSelect: !message.isEphemeral && canSelect,
-      canDownload: !isProtected && canDownload,
+      canDownload,
       canSaveGif: !isProtected && canSaveGif,
       canRevote: !message.isEphemeral && canRevote,
       canClosePoll: !message.isEphemeral && !isScheduled && canClosePoll,
