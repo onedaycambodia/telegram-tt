@@ -770,24 +770,12 @@ const Profile = ({
     focusMessage({ chatId: message.chatId, messageId: message.id });
   });
 
-  const getMessageContextActions = useLastCallback((
-    message: ApiMessage, mediaIndex?: number,
-  ): MenuItemContextAction[] => {
+  const getMessageContextActions = useLastCallback((message: ApiMessage): MenuItemContextAction[] => {
     const global = getGlobal();
     const actions: MenuItemContextAction[] = [];
 
-    // Photo/video only: the other tabs (files, music, links) keep just "Focus message"
+    // Photo/video only: the other tabs (files, music, links) keep the plain "Focus message"
     const isPhotoOrVideo = Boolean(message.content.photo || message.content.video);
-
-    if (isPhotoOrVideo) {
-      actions.push({
-        title: message.content.video ? lang('Open') : lang('ActionSuggestedPhotoButton'),
-        icon: 'eye',
-        handler: () => {
-          handleSelectMedia(message.id, message.chatId, mediaIndex);
-        },
-      });
-    }
 
     // Protected chats stay protected, except for their owner who controls that setting anyway
     const isOwner = Boolean(selectChat(global, message.chatId)?.isOwner);
@@ -804,8 +792,12 @@ const Profile = ({
       });
     }
 
+    // Jumps to the photo/video inside the chat
+    let focusTitle = lang('FocusMessage');
+    if (message.content.video) focusTitle = lang('ViewVideoInChat');
+    else if (message.content.photo) focusTitle = lang('ViewPhotoInChat');
     actions.push({
-      title: lang('FocusMessage'),
+      title: focusTitle,
       icon: 'show-message',
       handler: () => {
         handleMessageFocus(message);
@@ -1140,7 +1132,7 @@ const Profile = ({
               canAutoPlay={canAutoPlayGifs}
               observeIntersection={observeIntersectionForMedia}
               onClick={handleSelectMedia}
-              contextActions={getMessageContextActions(message, mediaIndex)}
+              contextActions={getMessageContextActions(message)}
             />
           ))
         ) : (resultType === 'stories' || resultType === 'storiesArchive') ? (
