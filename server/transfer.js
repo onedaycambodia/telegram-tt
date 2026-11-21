@@ -12,8 +12,8 @@ const { Api } = require('telegram');
 const { generateRandomBigInt } = require('telegram/Helpers');
 const { CustomFile } = require('telegram/client/uploads');
 
-const ALBUM_MIN = 5;
-const ALBUM_MAX = 6;
+const ALBUM_MIN = 4; // Session-Login uses 4 per album: smaller albums fail less often
+const ALBUM_MAX = 4;
 const FORWARD_BATCH = 100;
 const PAUSE_MS = 400;
 const DOWNLOAD_PAUSE_MS = 500;
@@ -265,23 +265,65 @@ function createEngine(getClient, onSessionDead) {
     }
   }
 
+  const fileSize = (p) => { try { return fs.statSync(p).size; } catch (e) { return 0; } };
+  const freeMb = () => {
+    try { const f = fs.statfsSync(TMP_DIR); return `${Math.round((f.bavail * f.bsize) / 1048576)} MB free`; } catch (e) { return 'free space unknown'; }
+  };
+  const dropCache = (item) => {
+    if (item.cachePath) { fs.unlink(item.cachePath, () => {}); item.cachePath = undefined; }
+  };
+
+  /* fresh copy of the message (new file reference) - what Session-Login does with _refetch before a retry */
+  async function refetchItem(job, item) {
+    if (!job.fromChat) return;
+    const keep = job.collected;
+    try {
+      const r = await fetchSelected(job, job.fromChat, [item.m.id]);
+      if (r[0]) item.m = r[0];
+    } catch (e) { /* keep the old message */ }
+    job.collected = keep;
+  }
+
+  /* Download to disk: writes to <file>.part and renames when complete (like Session-Login's ensure_cached).
+   * A finished file is kept in item.cachePath, so a retried / split album does NOT download it again. */
+  async function downloadToDisk(job, item) {
+    if (item.cachePath && fileSize(item.cachePath)) return item.cachePath;
+    const client = await getClient(job.accountId);
+    const base = path.join(TMP_DIR, `tt-${job.id}-${item.m.id}`);
+    const part = `${base}.part`;
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) { await sleep(2000 * attempt); await refetchItem(job, item); }
+      try {
+        try { fs.unlinkSync(part); } catch (e) { /* no partial file */ }
+        await withRetry(job, () => stallGuard(job, 'download', async (beat) => {
+          await client.downloadMedia(item.m, { outputFile: part, progressCallback: beat });
+        }));
+        if (fileSize(part)) {
+          fs.renameSync(part, base);
+          item.cachePath = base;
+          return base;
+        }
+        lastErr = new Error(`download finished but wrote 0 bytes (${part}, ${freeMb()})`);
+      } catch (e) {
+        if (job.cancel || errText(e).includes('CANCELLED') || fatalOf(e)) throw e;
+        lastErr = e;
+      }
+      console.error(`[transfer] download of message ${item.m.id} failed (try ${attempt}/3): ${errText(lastErr)}`);
+      try { fs.unlinkSync(part); } catch (e) { /* ignore */ }
+    }
+    throw new Error(`Could not download the file: ${errText(lastErr)}`);
+  }
+
   async function prepareMedia(job, toPeer, item, hideCaption) {
     const client = await getClient(job.accountId);
     const { m, kind } = item;
     const name = fileNameOf(m, kind);
 
-    // Big videos (> 2 GB) cannot be held in memory: GramJS then needs a real file path.
-    // So every file is downloaded to a temp file on disk, uploaded from there, then deleted.
-    const tmpPath = path.join(TMP_DIR, `tt-${job.id}-${m.id}-${Math.random().toString(36).slice(2, 8)}`);
-    try {
-      await withRetry(job, () => stallGuard(job, 'download', async (beat) => {
-        try { fs.unlinkSync(tmpPath); } catch (e) { /* no partial file */ }
-        await client.downloadMedia(m, { outputFile: tmpPath, progressCallback: beat });
-      }));
-
-      let size = 0;
-      try { size = fs.statSync(tmpPath).size; } catch (e) { size = 0; }
-      if (!size) throw new Error('Could not download the file');
+    // Every file goes to disk first (big videos cannot be held in memory), uploaded from there.
+    {
+      const tmpPath = await downloadToDisk(job, item);
+      const size = fileSize(tmpPath);
 
       const inputFile = await withRetry(job, () => stallGuard(job, 'upload',
         (beat) => client.uploadFile({
@@ -318,8 +360,6 @@ function createEngine(getClient, onSessionDead) {
       } else throw new Error('Upload failed: Telegram returned no media');
 
       return { media, caption: hideCaption ? '' : (m.message || ''), entities: hideCaption ? undefined : m.entities };
-    } finally {
-      fs.unlink(tmpPath, () => {});
     }
   }
 
@@ -330,10 +370,14 @@ function createEngine(getClient, onSessionDead) {
       }));
       return;
     }
-    const p = await prepareMedia(job, toPeer, item, hideCaption);
-    await call(job, new Api.messages.SendMedia({
-      peer: toPeer, media: p.media, message: p.caption, entities: p.entities, randomId: generateRandomBigInt(),
-    }));
+    try {
+      const p = await prepareMedia(job, toPeer, item, hideCaption);
+      await call(job, new Api.messages.SendMedia({
+        peer: toPeer, media: p.media, message: p.caption, entities: p.entities, randomId: generateRandomBigInt(),
+      }));
+    } finally {
+      dropCache(item);
+    }
   }
 
   async function sendAlbumByDownload(job, toPeer, items, hideCaption) {
@@ -355,11 +399,54 @@ function createEngine(getClient, onSessionDead) {
     }));
   }
 
+  /* Album that does not give up on grouping: full album -> two smaller albums -> one retry -> single files.
+   * Files already downloaded stay on disk (item.cachePath) so nothing is downloaded twice. */
+  async function sendAlbumResilient(job, toPeer, items, hideCaption, markSent, sendOne) {
+    const bail = (err) => {
+      if (job.cancel || errText(err).includes('CANCELLED')) throw new Error('CANCELLED');
+      const fatal = fatalOf(err);
+      if (fatal) throw new Error(fatal);
+    };
+    const attempt = async (list) => {
+      try {
+        await sendAlbumByDownload(job, toPeer, list, hideCaption);
+        markSent(list);
+        await sleep(DOWNLOAD_PAUSE_MS);
+        return;
+      } catch (err) {
+        bail(err);
+        console.error(`[transfer] album of ${list.length} failed: ${errText(err)}`);
+        if (list.length >= 4) {
+          const mid = list.length >> 1;
+          await attempt(list.slice(0, mid));
+          await attempt(list.slice(mid));
+          return;
+        }
+        await sleep(DOWNLOAD_PAUSE_MS);
+        try {
+          await sendAlbumByDownload(job, toPeer, list, hideCaption);
+          markSent(list);
+          return;
+        } catch (err2) {
+          bail(err2);
+          job.error = `Album failed (${errText(err2).slice(0, 120)}) - sent as single files`;
+        }
+        for (const item of list) await sendOne(item);
+      }
+    };
+    try {
+      await attempt(items);
+    } finally {
+      items.forEach(dropCache);
+    }
+  }
+
   async function run(job, p) {
     const {
       fromChat, toChat, types, hideCaption, albums, skipIds = [], messageIds,
     } = p;
     try {
+      job.fromChat = fromChat;
       const useDownload = Boolean(p.download || p.fromProtected);
       job.download = useDownload;
       job.copying = useDownload;
@@ -434,28 +521,7 @@ function createEngine(getClient, onSessionDead) {
 
         if (useDownload) {
           if (unit.album) {
-            try {
-              await sendAlbumByDownload(job, toPeer, unit.items, hideCaption);
-              markSent(unit.items);
-              await sleep(DOWNLOAD_PAUSE_MS);
-            } catch (err) {
-              if (job.cancel || errText(err).includes('CANCELLED')) break;
-              const fatal = fatalOf(err);
-              if (fatal) throw new Error(fatal);
-              let sent = false;
-              try {
-                await sleep(DOWNLOAD_PAUSE_MS);
-                await sendAlbumByDownload(job, toPeer, unit.items, hideCaption);
-                markSent(unit.items);
-                sent = true;
-              } catch (err2) {
-                if (job.cancel || errText(err2).includes('CANCELLED')) break;
-                const fatal2 = fatalOf(err2);
-                if (fatal2) throw new Error(fatal2);
-                job.error = `Album failed (${errText(err2).slice(0, 120)}) - sent as single files`;
-              }
-              if (!sent) for (const item of unit.items) await sendOneByDownload(item);
-            }
+            await sendAlbumResilient(job, toPeer, unit.items, hideCaption, markSent, sendOneByDownload);
           } else {
             for (const item of unit.items) { if (job.cancel) break; await sendOneByDownload(item); }
           }
@@ -472,16 +538,8 @@ function createEngine(getClient, onSessionDead) {
           if (fatal) throw new Error(fatal);
           let recovered = false;
           if (unit.album) {
-            try {
-              await sendAlbumByDownload(job, toPeer, unit.items, hideCaption);
-              markSent(unit.items);
-              recovered = true;
-            } catch (err2) {
-              if (job.cancel) break;
-              const fatal2 = fatalOf(err2);
-              if (fatal2) throw new Error(fatal2);
-              job.error = `Album failed (${errText(err2).slice(0, 120)}) - sent as single files`;
-            }
+            await sendAlbumResilient(job, toPeer, unit.items, hideCaption, markSent, sendOneByDownload);
+            recovered = true;
           }
           if (!recovered) await forwardOneByOne(unit.items);
         }
