@@ -114,6 +114,33 @@
   }
 }
 
+.sendModeSwitch {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0.75rem 1rem 0;
+  padding: 0.1875rem;
+  border-radius: 0.875rem;
+  background: var(--color-background-secondary);
+}
+
+.sendModeButton {
+  flex: 1;
+  height: 2.25rem;
+  border: 0;
+  border-radius: 0.6875rem;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sendModeActive {
+  background: var(--color-primary);
+  color: #fff;
+}
+
 .gifSeparateHint {
   margin: 0.5rem 1.5rem 0;
   font-size: 0.875rem;

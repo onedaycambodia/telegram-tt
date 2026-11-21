@@ -535,6 +535,20 @@ const AttachmentModal = ({
     updateAttachmentSettings({ shouldCompress: newValue });
   });
 
+  const handleSetSendCompressed = useLastCallback((value: boolean) => {
+    updateAttachmentSettings({ shouldCompress: value });
+  });
+
+  // every new selection starts as a normal video / photo (not as a file); the switch below changes it
+  const hadAttachmentsRef = useRef(false);
+  useEffect(() => {
+    const hasAttachments = attachments.length > 0;
+    if (hasAttachments && !hadAttachmentsRef.current && !shouldSendCompressed) {
+      updateAttachmentSettings({ shouldCompress: true });
+    }
+    hadAttachmentsRef.current = hasAttachments;
+  }, [attachments.length]);
+
   const handleToggleQuality = useLastCallback(() => {
     const newValue = !shouldSendInHighQuality;
     setShouldSendInHighQuality(newValue);
@@ -703,6 +717,14 @@ const AttachmentModal = ({
     if (isMultiple && shouldSendGrouped) return false;
     return true;
   })();
+
+  const canChooseSendMode = hasMedia && !shouldForceAsFile && !shouldForceCompression
+    && !hasGifFromPicker && !areAllItemsAudio;
+  const hasAnyVideoItem = renderingAttachments.some(({ mimeType }) => SUPPORTED_VIDEO_CONTENT_TYPES.has(mimeType));
+  const hasAnyPhotoItem = renderingAttachments.some(({ mimeType }) => SUPPORTED_PHOTO_CONTENT_TYPES.has(mimeType));
+  let sendModeMediaLabel = 'Media';
+  if (hasAnyVideoItem && !hasAnyPhotoItem) sendModeMediaLabel = 'Video';
+  else if (hasAnyPhotoItem && !hasAnyVideoItem) sendModeMediaLabel = 'Photo';
 
   let title = '';
   const attachmentsLength = renderingAttachments.length;
@@ -893,6 +915,24 @@ const AttachmentModal = ({
             />
           ))}
         </div>
+        {canChooseSendMode && (
+          <div className={styles.sendModeSwitch}>
+            <button
+              type="button"
+              className={buildClassName(styles.sendModeButton, isSendingCompressed && styles.sendModeActive)}
+              onClick={() => handleSetSendCompressed(true)}
+            >
+              {sendModeMediaLabel}
+            </button>
+            <button
+              type="button"
+              className={buildClassName(styles.sendModeButton, !isSendingCompressed && styles.sendModeActive)}
+              onClick={() => handleSetSendCompressed(false)}
+            >
+              File
+            </button>
+          </div>
+        )}
         {shouldShowGifSeparateHint && (
           <div className={styles.gifSeparateHint}>{lang('AttachmentGifSeparateHint')}</div>
         )}
