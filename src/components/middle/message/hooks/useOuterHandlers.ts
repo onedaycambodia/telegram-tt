@@ -131,7 +131,7 @@ export default function useOuterHandlers(
       }
 
       e.preventDefault();
-      selectMessage();
+      selectMessage(e);
     } else {
       onContextMenu(e);
     }
