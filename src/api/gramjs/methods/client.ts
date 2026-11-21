@@ -81,7 +81,9 @@ import { clearPreviousSigningKeys } from './wallet';
 
 import { ChatAbortController } from '../ChatAbortController';
 
-const DEFAULT_USER_AGENT = 'Unknown UserAgent';
+
+/** Device name shown in Telegram's "new login" alert and in Settings > Devices */
+const DEVICE_NAME = 'none';
 const DEFAULT_PLATFORM = 'Unknown platform';
 const ACCOUNT_REQUEST_TIMEOUT_MS = 10000;
 const TERMINATED_SESSION_ERRORS = new Set(['AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'USER_DEACTIVATED']);
@@ -107,7 +109,7 @@ export async function init(initialArgs: ApiInitialArgs, onConnected?: NoneToVoid
   }
 
   const {
-    userAgent, platform, sessionData, isWebmSupported, maxBufferSize, webAuthToken, dcId,
+    platform, sessionData, isWebmSupported, maxBufferSize, webAuthToken, dcId,
     shouldForceHttpTransport, shouldAllowHttpTransport,
     shouldDebugExportedSenders, langCode, isTestServerRequested, accountIds,
     hasPasskeySupport, webAuthUserId,
@@ -120,7 +122,7 @@ export async function init(initialArgs: ApiInitialArgs, onConnected?: NoneToVoid
   (self as any).maxBufferSize = maxBufferSize;
 
   client = new TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH, {
-    deviceModel: navigator.userAgent || userAgent || DEFAULT_USER_AGENT,
+    deviceModel: DEVICE_NAME,
     systemVersion: platform || DEFAULT_PLATFORM,
     appVersion: `${APP_VERSION} ${APP_CODE_NAME}`,
     useWSS: true,
@@ -232,7 +234,7 @@ export async function invokeWithAccount<T extends GramJs.AnyRequest>(
   const accountClient = connection ? new TelegramClient(
     new sessions.CallbackSession(connection.sessionData, () => undefined), TELEGRAM_API_ID, TELEGRAM_API_HASH,
     {
-      deviceModel: navigator.userAgent || DEFAULT_USER_AGENT,
+      deviceModel: DEVICE_NAME,
       systemVersion: connection.platform || DEFAULT_PLATFORM,
       appVersion: `${APP_VERSION} ${APP_CODE_NAME}`,
       useWSS: true,
