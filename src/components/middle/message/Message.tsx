@@ -672,11 +672,20 @@ const Message = ({
 
   const selectMessage = useLastCallback((e?: React.MouseEvent<HTMLDivElement, MouseEvent>, groupedId?: string) => {
     if (isAccountFrozen || message.isEphemeral) return;
+    // Select only the tapped/long-pressed album item instead of the whole album
+    let targetMessageId = messageId;
+    if (isAlbum && e?.target instanceof Element) {
+      const itemEl = e.target.closest('[id^="album-media-message-"]');
+      const match = itemEl?.id.match(/^album-media-message-(\d+(?:-\d+)?)$/);
+      if (match) {
+        const parsedId = Number(match[1].replace('-', '.'));
+        if (album.messages.some(({ id }) => id === parsedId)) targetMessageId = parsedId;
+      }
+    }
     toggleMessageSelection({
-      messageId,
+      messageId: targetMessageId,
       groupedId,
       ...(e?.shiftKey && { withShift: true }),
-      ...(isAlbum && { childMessageIds: album.messages.map(({ id }) => id) }),
     });
   });
 

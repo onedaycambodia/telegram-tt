@@ -640,15 +640,7 @@ const ContextMenuContainer = ({
   });
 
   const handleSelectMessage = useLastCallback(() => {
-    const params = album?.messages
-      ? {
-        messageId: message.id,
-        childMessageIds: album.messages.map(({ id }) => id),
-        withShift: false,
-      }
-      : { messageId: message.id, withShift: false };
-
-    toggleMessageSelection(params);
+    toggleMessageSelection({ messageId: message.id, withShift: false });
     closeMenu();
   });
 
