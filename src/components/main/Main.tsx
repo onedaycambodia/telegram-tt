@@ -12,6 +12,8 @@ import type { ApiChatFolder, ApiLimitTypeWithModal, ApiStarGiftAuctionState, Api
 import type { TabState } from '../../global/types';
 
 import { BASE_EMOJI_KEYWORD_LANG, DEBUG, FOLDERS_POSITION_LEFT } from '../../config';
+import { ACCOUNT_SLOT } from '../../util/multiaccount';
+import { PENDING_LOGOUT_KEY_PREFIX } from '../../util/pendingLogout';
 import { requestNextMutation } from '../../lib/fasterdom/fasterdom';
 import {
   selectAreFoldersPresent,
@@ -274,6 +276,7 @@ const Main = ({
     loadGiftAuction,
     loadPromoData,
     loadActiveGiftAuctions,
+    openSettingsConfirmation,
   } = getActions();
 
   if (DEBUG && !DEBUG_isLogged) {
@@ -297,6 +300,19 @@ const Main = ({
 
   const containerRef = useRef<HTMLDivElement>();
   const leftColumnRef = useRef<HTMLDivElement>();
+
+  // Account menu "log out" on another account: this tab was opened for that account, ask for confirmation
+  useEffect(() => {
+    const key = `${PENDING_LOGOUT_KEY_PREFIX}${ACCOUNT_SLOT || 1}`;
+    try {
+      if (localStorage.getItem(key)) {
+        localStorage.removeItem(key);
+        openSettingsConfirmation({ confirmation: 'logOut' });
+      }
+    } catch (err) {
+      // Do nothing
+    }
+  }, [openSettingsConfirmation]);
 
   const { isDesktop } = useAppLayout();
   useEffect(() => {
