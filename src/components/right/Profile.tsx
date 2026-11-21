@@ -97,6 +97,7 @@ import useTopOverscroll from '../../hooks/scroll/useTopOverscroll.tsx';
 import useEffectWithPrevDeps from '../../hooks/useEffectWithPrevDeps';
 import useFlag from '../../hooks/useFlag';
 import { useIntersectionObserver } from '../../hooks/useIntersectionObserver';
+import useAppLayout from '../../hooks/useAppLayout';
 import useLang from '../../hooks/useLang';
 import useLastCallback from '../../hooks/useLastCallback';
 import useMediaTransition from '../../hooks/useMediaTransition';
@@ -340,6 +341,7 @@ const Profile = ({
     openMediaViewer,
     openAudioPlayer,
     focusMessage,
+    toggleChatInfo,
     downloadMedia,
     setNewChatMembersDialogState,
     loadPeerProfileStories,
@@ -766,7 +768,13 @@ const Profile = ({
     openChat({ id });
   });
 
+  const { isMobile: isMobileLayout } = useAppLayout();
+
   const handleMessageFocus = useLastCallback((message: ApiMessage) => {
+    if (isMobileLayout) {
+      // On mobile the info panel covers the chat: close it first, otherwise the jump happens behind it
+      toggleChatInfo({ force: false }, { forceSyncOnIOs: true });
+    }
     focusMessage({ chatId: message.chatId, messageId: message.id });
   });
 
