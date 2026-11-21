@@ -340,6 +340,7 @@ const Profile = ({
     openMediaViewer,
     openAudioPlayer,
     focusMessage,
+    downloadMedia,
     setNewChatMembersDialogState,
     loadPeerProfileStories,
     loadStoriesArchive,
@@ -769,14 +770,49 @@ const Profile = ({
     focusMessage({ chatId: message.chatId, messageId: message.id });
   });
 
-  const getMessageContextActions = useLastCallback((message: ApiMessage): MenuItemContextAction[] => {
-    return [{
+  const getMessageContextActions = useLastCallback((
+    message: ApiMessage, mediaIndex?: number,
+  ): MenuItemContextAction[] => {
+    const global = getGlobal();
+    const actions: MenuItemContextAction[] = [];
+
+    // Photo/video only: the other tabs (files, music, links) keep just "Focus message"
+    const isPhotoOrVideo = Boolean(message.content.photo || message.content.video);
+
+    if (isPhotoOrVideo) {
+      actions.push({
+        title: message.content.video ? lang('Open') : lang('ActionSuggestedPhotoButton'),
+        icon: 'eye',
+        handler: () => {
+          handleSelectMedia(message.id, message.chatId, mediaIndex);
+        },
+      });
+    }
+
+    // Protected chats stay protected, except for their owner who controls that setting anyway
+    const isOwner = Boolean(selectChat(global, message.chatId)?.isOwner);
+    const isProtected = !isOwner && (isChatProtected || message.isProtected);
+    const downloadableMedia = isPhotoOrVideo && !isProtected
+      ? selectMessageDownloadableMedia(global, message) : undefined;
+    if (downloadableMedia) {
+      actions.push({
+        title: lang('AccActionDownload'),
+        icon: 'download',
+        handler: () => {
+          downloadMedia({ media: downloadableMedia, originMessage: message });
+        },
+      });
+    }
+
+    actions.push({
       title: lang('FocusMessage'),
       icon: 'show-message',
       handler: () => {
         handleMessageFocus(message);
       },
-    }];
+    });
+
+    return actions;
   });
 
   const handleResetGiftsFilter = useLastCallback(() => {
@@ -1104,7 +1140,7 @@ const Profile = ({
               canAutoPlay={canAutoPlayGifs}
               observeIntersection={observeIntersectionForMedia}
               onClick={handleSelectMedia}
-              contextActions={getMessageContextActions(message)}
+              contextActions={getMessageContextActions(message, mediaIndex)}
             />
           ))
         ) : (resultType === 'stories' || resultType === 'storiesArchive') ? (
